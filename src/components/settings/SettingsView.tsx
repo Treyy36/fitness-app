@@ -38,7 +38,7 @@ export function SettingsView() {
       db.recommendations.clear(),
       db.userPreferences.clear(),
     ]);
-    window.location.reload();
+    window.location.href = '/fitness-app/';
   };
 
   return (
