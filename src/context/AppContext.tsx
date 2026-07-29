@@ -54,7 +54,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     (async () => {
       await seedDatabase();
-      await Promise.all([refreshPlans(), refreshExercises()]);
+      await Promise.all([refreshPlans(), refreshExercises(), refreshSessions()]);
       setInitialized(true);
     })();
   }, []);
