@@ -1,9 +1,9 @@
 import sharp from 'sharp';
 
 async function generateIcons() {
-  // Create a simple SVG with a dumbbell-like design on a dark background
+  // Full-bleed background — no rounded corners, iOS handles that itself
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#0f172a"/>
+  <rect width="512" height="512" fill="#0f172a"/>
   <g transform="translate(256,256)" fill="none" stroke="#6366f1" stroke-width="28" stroke-linecap="round">
     <!-- Barbell -->
     <line x1="-160" y1="0" x2="160" y2="0"/>
