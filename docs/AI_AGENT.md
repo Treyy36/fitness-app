@@ -14,7 +14,8 @@ buildContext() — gathers live state
     ├── Today's scheduled plan (from workoutPlans)
     ├── All plans (from workoutPlans)
     ├── Exercise catalog (categorized by muscle group)
-    └── Last 5 sessions (from sessions + sessionExercises)
+    ├── Last 20 sessions (detailed ×10, condensed ×10)
+    └── Last 10 recommendations (with acknowledged status)
     ↓
 buildSystemPrompt() — assembles full prompt
     ├── Coaching persona ("You are my dedicated strength coach")
@@ -36,11 +37,11 @@ AI Response (natural language + embedded actions)
 parseActions() — regex extraction
     └── /<!--ACTION:(.*?)-->/g → ParsedAction[]
     ↓
-executeActions() — database mutations
-    ├── log_session → creates session + sessionExercises
-    ├── create_plan → creates workoutPlan
-    ├── save_recommendation → creates recommendation
-    └── Other actions as needed
+executeActions() — database mutations + queries
+    ├── Mutations: log_session, update_session, delete_session, create_plan, update_plan, add_exercise, save_recommendation
+    └── Queries: get_session_history, get_recommendation_history, get_rpe_trend (return data as system messages)
+    ↓
+Query results injected as system messages (AI sees them next turn)
     ↓
 UI updates (messages, sessions, plans refresh)
 ```
@@ -76,7 +77,9 @@ Pre-loaded observations about the athlete's strengths/weaknesses:
 ### 5. Live Context (dynamic)
 - Today's scheduled workout with exercise names, sets, reps
 - All workout plans with day mappings
-- Last 5 sessions with detailed set data (weights, reps, completions, RPE)
+- Last **20** sessions with detailed set data (full detail for 10 most recent, condensed for older: just exercise name + avg weight)
+- Last 10 recommendations with acknowledged status (closes the feedback loop)
+- Session type counts (standard/test/deload)
 
 ### 6. Response Format
 Explicit instructions for the `<!--ACTION:{...}-->` format with available action types and their schemas.
@@ -103,10 +106,16 @@ The app:
 
 | Action | Trigger | What it does |
 |---|---|---|
-| `log_session` | "workout complete", "done" | Creates session + sessionExercises with full set data |
+| `log_session` | "workout complete", "done" | Creates session + sessionExercises with full set data. Supports `sessionType` for standard/test/deload. |
 | `create_plan` | "create a PPL split", plan definition | Creates a new workoutPlan with exercise mappings |
-| `update_plan` | "add X to Push A" | Updates an existing plan's exercises |
+| `update_plan` | "add X to Push A", "swap Pec Deck for..." | Updates an existing plan's exercises, name, or day mid-week |
+| `update_session` | "fix my bench weight", "that was actually 85lbs" | Edits a past session's exercises, feedback, or sessionType |
+| `delete_session` | "delete session 7", "remove that duplicate" | Permanently removes a session + all its exercise data |
+| `add_exercise` | "add Plate-Loaded Incline Press" | Adds a new exercise to the catalog on the fly |
 | `save_recommendation` | After session, "any suggestions?" | Saves a recommendation with type, message, action |
+| `get_session_history` | "show my chest history", "all sessions last month" | Queries sessions by exercise, date range, plan, or sessionType. Results as system message. |
+| `get_recommendation_history` | "what recs did I get?", "biceps recommendations" | Queries past recommendations by exercise or type. Results as system message. |
+| `get_rpe_trend` | "show RPE trends for Chest Press" | Returns per-session RPE data for a given exercise across all history. Results as system message. |
 
 ### Agentic Logging
 
@@ -118,6 +127,26 @@ The AI can infer what to log from context. Examples:
 | "workout complete but failed last 2 reps on bench set 3" | All exercises completed; bench set 3 marked `completed: false` |
 | "swapped hammer curls for cable curls at 20lb" | Logs substitution with new exercise and weight |
 | "added an extra set of lateral raises" | Logs plan exercises + bonus exercise |
+| "this was a test session, trying higher reps" | Logs with `sessionType: 'test'` |
+| "deload day, everything at 50%" | Logs with `sessionType: 'deload'` and reduced weights |
+| "delete session 7, it was a duplicate" | Uses `delete_session` to remove + cascade |
+| "fix my bench press on Monday to 85lbs" | Uses `update_session` to correct weight |
+
+### Query Actions (two-turn pattern)
+
+Query actions (`get_session_history`, `get_recommendation_history`, `get_rpe_trend`) work differently from mutations. The AI includes them in its response, the app executes them, and the results are injected as **system messages** that the AI sees on the **next** user message:
+
+```
+User: "show my machine chest press RPE trend"
+    ↓
+AI responds: "Let me look that up for you. 
+<!--ACTION:{...get_rpe_trend...}-->"
+    ↓
+App executes query, injects system message with trend data
+    ↓
+User: "ok" (or any next message)
+    ↓
+AI now sees the RPE trend data in context and can discuss it
 
 ### Action Execution Safety
 
@@ -126,6 +155,9 @@ The AI can infer what to log from context. Examples:
 - Includes the plan name in session for future reference
 - Stores exercise names as snapshots (survives catalog changes)
 - Catches and reports errors per-action (doesn't abort the batch)
+- `delete_session` cascades to remove all associated `sessionExercises` rows
+- `update_session` replaces exercise data atomically (delete old + insert new)
+- Query actions return `ExecuteActionsResult` with both `results` and `queryResults` — query data is injected as system messages for the next AI turn
 
 ## Offline Behavior
 
@@ -147,4 +179,4 @@ To modify the AI's behavior:
 
 ---
 
-*Last updated: 2026-07-30 · Generated from codebase at commit `fc045e8`*
+*Last updated: 2026-07-30 · Updated for 10 total actions (edit/delete/query), sessionType, expanded context, two-turn query pattern*

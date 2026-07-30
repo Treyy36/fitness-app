@@ -13,6 +13,7 @@ export function buildSystemPrompt(context: {
   allPlans: string;
   exerciseCatalog: string;
   recentSessionData: string;
+  recommendationSummary?: string;
   activeSessionId: number | null;
   preferences: string[];
 }): string {
@@ -78,8 +79,11 @@ ${context.allPlans || 'No plans defined yet.'}
 The following exercises are available in the database. When creating plans, use exercises from this catalog by exact name:
 ${context.exerciseCatalog || 'Catalog loading...'}
 
-## Recent Session History (last 5)
+## Recent Session History (last 20, condensed for older entries)
 ${context.recentSessionData || 'No sessions recorded yet.'}
+
+## Recent Recommendations (last 10)
+${context.recommendationSummary || 'No recommendations logged yet.'}
 
 ${prefs}
 ## Response Format
@@ -88,10 +92,16 @@ When you need the app to perform an action (log a session, create a plan, save a
 <!--ACTION:{"action":"<action_name>","data":{...}}-->
 
 Available actions:
-- **log_session**: { action: "log_session", data: { planName: string, planId?: number, exercises: Array<{ name: string, sets: Array<{ setNumber: number, reps: number, weight: number, completed: boolean, rpe?: number }> }>, feedback?: string } }
+- **log_session**: { action: "log_session", data: { planName: string, planId?: number, exercises: Array<{ name: string, sets: Array<{ setNumber: number, reps: number, weight: number, completed: boolean, rpe?: number }> }>, feedback?: string, sessionType?: "standard"|"test"|"deload" } } — set sessionType to "test" for experimental/adjustment sessions, "deload" for reduced-volume sessions. Defaults to "standard".
 - **create_plan**: { action: "create_plan", data: { name: string, dayOfWeek?: number, exercises: Array<{ name: string, sets: number, reps: number }> } }
-- **update_plan**: { action: "update_plan", data: { planId: number, exercises?: Array<...> } }
+- **update_plan**: { action: "update_plan", data: { planId: number, exercises?: Array<{ name: string, sets: number, reps: number }>, name?: string, dayOfWeek?: number } } — modify a plan's exercises, name, or day mid-week without creating a new plan.
+- **update_session**: { action: "update_session", data: { sessionId: number, exercises?: Array<{ name: string, sets: Array<{ setNumber: number, reps: number, weight: number, completed: boolean, rpe?: number }> }>, feedback?: string, notes?: string, sessionType?: "standard"|"test"|"deload" } } — edit a past session (weight, reps, RPE, feedback, or session type).
+- **delete_session**: { action: "delete_session", data: { sessionId: number } } — permanently remove a session that was logged incorrectly or is a duplicate.
+- **add_exercise**: { action: "add_exercise", data: { name: string, category: "chest"|"back"|"shoulders"|"biceps"|"triceps"|"quads"|"hamstrings"|"glutes"|"calves"|"abs"|"other", defaultSets?: number, defaultReps?: number } } — add a new exercise to the catalog on the fly.
 - **save_recommendation**: { action: "save_recommendation", data: { type: "weight_increase"|"weight_decrease"|"exercise_swap"|"rest_more"|"form_tip"|"general", exercise?: string, message: string, action?: string } }
+- **get_session_history**: { action: "get_session_history", data: { exerciseName?: string, dateFrom?: string, dateTo?: string, planName?: string, sessionType?: string, limit?: number } } — query session history with filters. Results appear as system data you can reference in your next response.
+- **get_recommendation_history**: { action: "get_recommendation_history", data: { exercise?: string, type?: string, acknowledged?: boolean, limit?: number } } — query past recommendations. Results appear as system data.
+- **get_rpe_trend**: { action: "get_rpe_trend", data: { exerciseName: string } } — get RPE trend data across all sessions for a specific exercise. Results appear as system data.
 
 ## Guidelines
 - Be concise but encouraging. Use emojis sparingly for tone. Address me as you would an athlete you're coaching.
@@ -100,7 +110,10 @@ Available actions:
 - For recommendations, reference specific data points (e.g., "You've hit 10 reps at 85lbs for 2 sessions — time to add 5lbs").
 - Maintain this training history permanently and continue expanding it after every workout.
 - If no plan exists for today and they ask for their workout, tell them and offer to help create one.
-- If the user says something that changes your behavior going forward, note it in your response and apply it.`;
+- If the user says something that changes your behavior going forward, note it in your response and apply it.
+- Use sessionType: "standard" for normal sessions, "test" for one-off experiments or adjustment sessions, "deload" for reduced-volume/weight sessions. Include this in log_session.
+- When the user asks about their history, trends, or past recommendations, use the get_session_history, get_rpe_trend, or get_recommendation_history actions to fetch data. Reference the system data that appears in your next response.
+- If the user says they logged something wrong (wrong weight, wrong exercise name, duplicate), offer to use update_session or delete_session to fix it.`;
 }
 
 export async function sendToDeepSeek(req: DeepSeekRequest): Promise<string> {

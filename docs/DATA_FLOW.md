@@ -25,7 +25,8 @@ buildContext() gathers live state:
     │     ]}
     ├─ app.plans → all 5 plans
     ├─ app.exercises → 17 exercises grouped by category
-    ├─ db.sessions (last 5) → recent history with set data
+    ├─ db.sessions (last 20) → recent history (full detail for 10 most recent, condensed for older)
+    ├─ db.recommendations (last 10) → past recommendations with acknowledged status
     │
     ▼
 buildSystemPrompt({
@@ -41,7 +42,8 @@ buildSystemPrompt({
     },
     allPlans: "Push A [Mon]: Machine Chest Press (3x10), ...",
     exerciseCatalog: "chest: Machine Chest Press, Incline DB Press, Pec Deck\n...",
-    recentSessionData: "2026-07-27 — Push A\n  - Machine Chest Press: Set1: 80lbs x 10..."
+    recentSessionData: "2026-07-27 — Push A\n  - Machine Chest Press: Set1: 80lbs x 10...",
+    recommendationSummary: "[○] weight_increase (Machine Chest Press): Hit 3×10 at 80lb...\n..."
 })
     │
     ▼
@@ -119,7 +121,8 @@ we'll look at bumping weight next week. 💪
     ]},
     ...all 6 exercises...
   ],
-  "feedback":"All exercises completed as prescribed"
+  "feedback":"All exercises completed as prescribed",
+  "sessionType":"standard"
 }}-->"
     │
     ▼
@@ -194,6 +197,80 @@ executeActions saves recommendation to DB
 Recommendation appears in chat, stored in recommendations table
 ```
 
+## Flow 4: Editing a Past Session (Chat)
+
+```
+User: "fix my bench press on Monday to 85lbs"
+    │
+    ▼
+Same initial flow → DeepSeek receives full context
+    │
+    ▼
+AI identifies the session and generates update_session ACTION:
+"I found your Monday Push A session. Updating Machine Chest Press to 85lbs.
+
+<!--ACTION:{"action":"update_session","data":{
+  "sessionId":7,
+  "exercises":[
+    {"name":"Machine Chest Press","sets":[
+      {"setNumber":1,"reps":10,"weight":85,"completed":true},
+      {"setNumber":2,"reps":10,"weight":85,"completed":true},
+      {"setNumber":3,"reps":10,"weight":85,"completed":true}
+    ]},
+    ...other exercises unchanged...
+  ]
+}}-->"
+    │
+    ▼
+executeActions handles update_session:
+    ├─ db.sessions.update(7, { feedback, sessionType })
+    ├─ db.sessionExercises.where('sessionId').equals(7).delete()  // remove old
+    ├─ For each exercise in data.exercises:
+    │   db.sessionExercises.add(...)  // insert updated
+    └─ app.refreshSessions()
+    │
+    ▼
+UI updates → History tab shows corrected weights
+```
+
+## Flow 5: Querying History / RPE Trends (Two-Turn)
+
+```
+User: "show me RPE trends for Machine Chest Press"
+    │
+    ▼
+Same initial flow → DeepSeek receives context
+    │
+    ▼
+AI generates get_rpe_trend query ACTION:
+"Let me pull up your RPE data for Machine Chest Press.
+
+<!--ACTION:{"action":"get_rpe_trend","data":{"exerciseName":"Machine Chest Press"}}-->"
+    │
+    ▼
+executeActions handles get_rpe_trend:
+    ├─ Queries all sessionExercises matching "Machine Chest Press"
+    ├─ Extracts RPE values across all sessions
+    ├─ Calculates avg RPE, per-session breakdowns
+    └─ Returns queryResults as system message:
+        "\n📈 RPE Trend Analysis for "Machine Chest Press":
+         2026-07-28 — Machine Chest Press: Set1: 80lbs x 10 @RPE7, Set2: 80lbs x 10 @RPE8, ...
+         2026-07-21 — Machine Chest Press: Set1: 70lbs x 10 @RPE6, ...
+         Summary: 6 sessions, 18 total sets. Average RPE: 7.2"
+    │
+    ▼
+System message injected into messagesRef.current
+    │
+    ▼
+User: "ok" (next message)
+    │
+    ▼
+AI now sees RPE trend data in context and can analyze:
+"Your Machine Chest Press RPE has been creeping up from ~6 to ~8 over the last 3 weeks.
+This suggests the weight is appropriately challenging. No need to increase yet —
+let's hold at 80lbs and focus on clean reps."
+```
+
 ## Key Data Relationships During Flow
 
 ```
@@ -203,7 +280,7 @@ workoutPlans[dayOfWeek=1] → Push A template
     ↓ references
 exercises[id=1,3,5,6,...] → Machine Chest Press, Incline DB Press, ...
     ↓ builds
-System prompt with full context
+System prompt with full context (20 sessions + 10 recs)
     ↓ sent to
 DeepSeek API
     ↓ returns
@@ -211,13 +288,29 @@ Natural language + <!--ACTION--> blocks
 
 User message "workout complete"
     ↓ AI generates
-log_session action
+log_session action (with sessionType)
     ↓ writes
-sessions[id=7] + sessionExercises[sessionId=7, exerciseId=1, sets=[...], ...]
+sessions[id=7] + sessionExercises[...]
     ↓ refreshes
 AppContext.sessions → UI updates
+
+User message "fix my bench press"
+    ↓ AI generates
+update_session action
+    ↓ deletes + re-inserts
+sessionExercises for session #7
+    ↓ refreshes
+AppContext.sessions → History tab shows corrected data
+
+User message "show RPE trends"
+    ↓ AI generates
+get_rpe_trend action
+    ↓ queries + formats
+RPE data across all matching sessions
+    ↓ injects system message
+AI sees trend data on next user message → can analyze
 ```
 
 ---
 
-*Last updated: 2026-07-30 · Generated from codebase at commit `fc045e8`*
+*Last updated: 2026-07-30 · Updated for sessionType, edit/delete flows, two-turn query pattern, 20-session context*

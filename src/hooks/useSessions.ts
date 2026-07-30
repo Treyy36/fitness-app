@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { db, type Session, type SessionExercise, type SetRecord } from '../db/database';
+import { db, type Session, type SessionExercise, type SetRecord, type SessionType } from '../db/database';
 
 export function useSessions() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -39,6 +39,23 @@ export function useSessions() {
   const completeSession = useCallback(
     async (id: number, feedback?: string) => {
       await db.sessions.update(id, { completedAt: new Date().toISOString(), feedback });
+      await refresh();
+    },
+    [refresh]
+  );
+
+  const updateSession = useCallback(
+    async (id: number, updates: Partial<Session>) => {
+      await db.sessions.update(id, updates);
+      await refresh();
+    },
+    [refresh]
+  );
+
+  const deleteSession = useCallback(
+    async (id: number) => {
+      await db.sessionExercises.where('sessionId').equals(id).delete();
+      await db.sessions.delete(id);
       await refresh();
     },
     [refresh]
@@ -92,6 +109,8 @@ export function useSessions() {
     getSessionsForPlan,
     createSession,
     completeSession,
+    updateSession,
+    deleteSession,
     addSessionExercise,
     updateSetRecord,
     getLastSessionExercise,

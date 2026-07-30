@@ -1,20 +1,8 @@
 import sharp from 'sharp';
 
 async function generateIcons() {
-  // Full-bleed background — no rounded corners, iOS handles that itself
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#0f172a"/>
-  <g transform="translate(256,256)" fill="none" stroke="#6366f1" stroke-width="28" stroke-linecap="round">
-    <!-- Barbell -->
-    <line x1="-160" y1="0" x2="160" y2="0"/>
-    <!-- Left plates -->
-    <rect x="-180" y="-50" width="20" height="100" rx="6" fill="#818cf8"/>
-    <rect x="-210" y="-38" width="20" height="76" rx="6" fill="#a5b4fc"/>
-    <!-- Right plates -->
-    <rect x="160" y="-50" width="20" height="100" rx="6" fill="#818cf8"/>
-    <rect x="190" y="-38" width="20" height="76" rx="6" fill="#a5b4fc"/>
-  </g>
-</svg>`;
+  // Use work.png as the source image for all icon sizes
+  const sourcePath = 'public/work.png';
 
   const sizes = [
     { size: 192, name: 'icon-192.png' },
@@ -23,12 +11,19 @@ async function generateIcons() {
   ];
 
   for (const { size, name } of sizes) {
-    await sharp(Buffer.from(svg))
+    await sharp(sourcePath)
       .resize(size, size)
       .png()
       .toFile(`public/${name}`);
     console.log(`✓ Generated ${name} (${size}x${size})`);
   }
+
+  // Also generate a 32x32 favicon
+  await sharp(sourcePath)
+    .resize(32, 32)
+    .png()
+    .toFile('public/favicon-32.png');
+  console.log('✓ Generated favicon-32.png (32x32)');
 }
 
 generateIcons().catch(console.error);

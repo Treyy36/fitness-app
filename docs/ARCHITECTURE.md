@@ -53,8 +53,8 @@ fitness-app/
     │   ├── database.ts           # Dexie schema: 6 tables, types, upsert helper
     │   └── seed.ts               # Exercise catalog, PPL plans, 6-session history
     ├── hooks/
-    │   ├── useWorkoutPlans.ts    # CRUD for plans + exercises + name resolution
-    │   ├── useSessions.ts        # CRUD for sessions + set data + last-session lookup
+    │   ├── useWorkoutPlans.ts    # CRUD for plans + exercises + addExercise
+    │   ├── useSessions.ts        # CRUD for sessions (create, update, delete) + set data
     │   └── useRecommendations.ts # CRUD for AI recommendations
     ├── context/
     │   ├── AppContext.tsx         # Global state: plans, exercises, sessions, init
@@ -69,7 +69,7 @@ fitness-app/
         │   ├── ChatView.tsx      # Chat UI: header, messages, input
         │   └── MessageBubble.tsx # Markdown rendering + action result badges
         ├── plans/PlanListView.tsx# Browse workout plan templates
-        ├── history/SessionHistoryView.tsx # Expandable session log
+        ├── history/SessionHistoryView.tsx # Session log with type filters, edit/delete UI
         └── settings/SettingsView.tsx # API key, stats, reset
 ```
 
@@ -88,7 +88,13 @@ All workout data lives in IndexedDB. The only external service is DeepSeek API. 
 On empty database, seeds 17 exercises, 5 workout plans, and 6 sessions of history. The seed check (`if (existing > 0) return`) prevents overwriting user data on subsequent loads.
 
 ### Session immutability from plan changes
-Sessions store their own snapshots of exercise names and set data. Modifying a workout plan later does not retroactively change logged sessions.
+Sessions store their own snapshots of exercise names and set data. Modifying a workout plan later does not retroactively change logged sessions. However, sessions can now be edited directly via `update_session` or removed via `delete_session` (both from chat and History tab UI).
+
+### Session type tagging
+Sessions carry an optional `sessionType` field (`'standard'` | `'test'` | `'deload'`). This distinguishes normal workouts from experimental sessions and reduced-volume deload days, enabling cleaner trend analysis. Filter chips in the History tab allow viewing by type.
+
+### Two-turn query actions
+`get_session_history`, `get_recommendation_history`, and `get_rpe_trend` are query actions that return data as system messages. The AI issues the query in its response, and the results appear in context on the next user message — enabling deep-dive analytics without architectural changes to the one-shot AI call pattern.
 
 ## Component Communication
 
@@ -105,7 +111,9 @@ sendToDeepSeek() → POST to api.deepseek.com/v1/chat/completions
     ↓
 parseActions() → extracts <!--ACTION:{...}--> blocks from response
     ↓
-executeActions() → writes to IndexedDB (create session, exercises, etc.)
+executeActions() → writes to IndexedDB (create/update/delete session, plans, exercises, query history)
+    ↓
+Query results (if any) → injected as system messages for next AI turn
     ↓
 refreshSessions() → updates AppContext state
     ↓
@@ -114,4 +122,4 @@ SessionHistoryView re-renders with new data
 
 ---
 
-*Last updated: 2026-07-30 · Generated from codebase at commit `fc045e8`*
+*Last updated: 2026-07-30 · Updated for sessionType, edit/delete, query actions, 20-session context*

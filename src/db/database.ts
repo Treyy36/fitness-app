@@ -55,6 +55,8 @@ export interface SessionExercise {
   sets: SetRecord[];
 }
 
+export type SessionType = 'standard' | 'test' | 'deload';
+
 export interface Session {
   id?: number;
   planId?: number;
@@ -63,6 +65,7 @@ export interface Session {
   completedAt?: string;
   notes?: string;
   feedback?: string; // user's post-workout freeform notes
+  sessionType?: SessionType;
 }
 
 export interface Recommendation {
@@ -102,6 +105,17 @@ export class FitnessDB extends Dexie {
       sessionExercises: '++id, sessionId, exerciseId',
       recommendations: '++id, sessionId, type, createdAt',
       userPreferences: '++id, &key',
+    });
+
+    this.version(2).stores({
+      sessions: '++id, planId, date, sessionType',
+    }).upgrade(async (tx) => {
+      const all = await tx.table('sessions').toCollection().toArray();
+      for (const s of all) {
+        if (s.id !== undefined) {
+          await tx.table('sessions').update(s.id, { sessionType: 'standard' });
+        }
+      }
     });
   }
 }

@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
-import { db, type WorkoutPlan, type Exercise, type Session } from '../db/database';
+import { db, type WorkoutPlan, type Exercise, type Session, type MuscleGroup } from '../db/database';
 import { seedDatabase } from '../db/seed';
 import { useWorkoutPlans, useExercises } from '../hooks/useWorkoutPlans';
 import { useSessions } from '../hooks/useSessions';
@@ -17,12 +17,15 @@ interface AppContextValue {
   // Exercises
   exercises: Exercise[];
   exercisesLoading: boolean;
+  addExercise: (name: string, category: MuscleGroup, defaultSets?: number, defaultReps?: number) => Promise<number>;
 
   // Sessions
   sessions: Session[];
   sessionsLoading: boolean;
   createSession: (s: Omit<Session, 'id'>) => Promise<number>;
   completeSession: (id: number, feedback?: string) => Promise<void>;
+  updateSession: (id: number, updates: Partial<Session>) => Promise<void>;
+  deleteSession: (id: number) => Promise<void>;
   getSessionExercises: (sessionId: number) => ReturnType<ReturnType<typeof useSessions>['getSessionExercises']>;
   addSessionExercise: ReturnType<typeof useSessions>['addSessionExercise'];
   getLastSessionExercise: ReturnType<typeof useSessions>['getLastSessionExercise'];
@@ -46,8 +49,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
 
   const { plans, loading: plansLoading, getPlanForDay, getPlanByName, createPlan, updatePlan, refresh: refreshPlans } = useWorkoutPlans();
-  const { exercises, loading: exercisesLoading, refresh: refreshExercises } = useExercises();
-  const { sessions, loading: sessionsLoading, createSession, completeSession, getSessionExercises, addSessionExercise, getLastSessionExercise, refresh: refreshSessions } = useSessions();
+  const { exercises, loading: exercisesLoading, refresh: refreshExercises, addExercise } = useExercises();
+  const { sessions, loading: sessionsLoading, createSession, completeSession, updateSession, deleteSession, getSessionExercises, addSessionExercise, getLastSessionExercise, refresh: refreshSessions } = useSessions();
   const recommendationsHook = useRecommendations();
 
   // Seed and initialize — refresh hooks after seeding to pick up the data
@@ -63,9 +66,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     <AppContext.Provider
       value={{
         plans, plansLoading, getPlanForDay, getPlanByName, createPlan, updatePlan,
-        exercises, exercisesLoading,
-        sessions, sessionsLoading, createSession, completeSession, getSessionExercises,
-        addSessionExercise, getLastSessionExercise, refreshSessions,
+        exercises, exercisesLoading, addExercise,
+        sessions, sessionsLoading, createSession, completeSession, updateSession, deleteSession,
+        getSessionExercises, addSessionExercise, getLastSessionExercise, refreshSessions,
         recommendationsHook,
         activeSessionId, setActiveSessionId,
         initialized,

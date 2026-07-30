@@ -46,6 +46,9 @@ One record per completed gym visit.
 | `completedAt` | `string?` | — | ISO timestamp when session was marked complete |
 | `notes` | `string?` | — | General notes |
 | `feedback` | `string?` | — | User's post-workout freeform feedback |
+| `sessionType` | `SessionType?` | Yes (v2) | `'standard'` (default), `'test'` (experiment/adjustment), or `'deload'` (reduced volume) |
+
+**Migration (v2)**: Existing sessions are backfilled to `sessionType: 'standard'` on upgrade.
 
 ### `sessionExercises` — Per-Exercise Set Data
 
@@ -121,9 +124,13 @@ userPreferences (standalone key-value)
 | Get today's plan | `useWorkoutPlans().getPlanForDay(new Date().getDay())` | Synchronous from state |
 | Create session | `useSessions().createSession({planName, date, ...})` | Returns new session ID |
 | Log exercise sets | `useSessions().addSessionExercise({sessionId, exerciseId, exerciseName, sets})` | Writes to sessionExercises |
+| Update session | `useSessions().updateSession(id, { feedback, sessionType })` | Edits session fields + optionally replaces exercises |
+| Delete session | `useSessions().deleteSession(id)` | Cascades to sessionExercises |
+| Add exercise | `useExercises().addExercise(name, category)` | Adds to catalog on the fly |
 | Get last session's weight | `useSessions().getLastSessionExercise(exerciseId)` | Finds most recent session with that exercise |
 | Save API key | `upsertPreference('deepseek_api_key', key)` | Safe upsert (no duplicate key errors) |
-| Get recent history | `db.sessions.orderBy('date').reverse().limit(5).toArray()` | For system prompt context |
+| Get session history | `db.sessions.orderBy('date').reverse().limit(20).toArray()` | For system prompt context (expanded from 5 → 20) |
+| Query by sessionType | `db.sessions.where('sessionType').equals('deload').toArray()` | Filter sessions by type |
 
 ## Seed Strategy
 
@@ -138,4 +145,4 @@ To re-seed: Settings → Reset All Data → page reloads → seed runs fresh.
 
 ---
 
-*Last updated: 2026-07-30 · Generated from codebase at commit `fc045e8`*
+*Last updated: 2026-07-30 · Updated for v2 migration (sessionType, edit/delete, addExercise)*

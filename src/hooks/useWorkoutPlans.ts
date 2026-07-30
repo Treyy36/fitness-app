@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { db, type WorkoutPlan, type Exercise, type WorkoutPlanExercise } from '../db/database';
+import { db, type WorkoutPlan, type Exercise, type WorkoutPlanExercise, type MuscleGroup } from '../db/database';
 
 export function useWorkoutPlans() {
   const [plans, setPlans] = useState<WorkoutPlan[]>([]);
@@ -73,7 +73,16 @@ export function useExercises() {
     [exercises]
   );
 
-  return { exercises, loading, refresh, getExercise, getByIds };
+  const addExercise = useCallback(
+    async (name: string, category: MuscleGroup, defaultSets = 3, defaultReps = 10) => {
+      const id = await db.exercises.add({ name, category, defaultSets, defaultReps });
+      await refresh();
+      return id;
+    },
+    [refresh]
+  );
+
+  return { exercises, loading, refresh, getExercise, getByIds, addExercise };
 }
 
 export function getExerciseName(

@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useCallback, type ReactNode, useRef, useEffect } from 'react';
 import { useApp } from './AppContext';
 import { sendToDeepSeek, buildSystemPrompt } from '../services/deepseek';
-import { parseActions, executeActions } from '../services/intentParser';
+import { parseActions, executeActions, type ExecuteActionsResult } from '../services/intentParser';
 import type { WorkoutPlan } from '../db/database';
 import { db, upsertPreference } from '../db/database';
 
@@ -67,17 +67,41 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     // Today's plan
     const todaysPlan = app.getPlanForDay(dayOfWeek);
 
-    // Recent sessions (last 5)
-    const recentSessions = await db.sessions.orderBy('date').reverse().limit(5).toArray();
+    // Recent sessions (last 20 — full detail for first 10, condensed for older)
+    const recentSessions = await db.sessions.orderBy('date').reverse().limit(20).toArray();
     let recentSessionData = '';
-    for (const session of recentSessions) {
+    for (let i = 0; i < recentSessions.length; i++) {
+      const session = recentSessions[i];
       const exercises = await db.sessionExercises.where('sessionId').equals(session.id!).toArray();
-      const exSummary = exercises.map((e) => {
-        const setSummary = e.sets.map((s) => `Set${s.setNumber}: ${s.weight}lbs x ${s.reps}${s.completed ? '' : ' (FAILED)'}${s.rpe ? ` RPE${s.rpe}` : ''}`).join(', ');
-        return `  - ${e.exerciseName}: ${setSummary}`;
-      }).join('\n');
-      recentSessionData += `\n${session.date} — ${session.planName || 'Session'}${session.feedback ? ` (Feedback: ${session.feedback})` : ''}\n${exSummary}\n`;
+      const typeLabel = session.sessionType && session.sessionType !== 'standard' ? ` [${session.sessionType}]` : '';
+
+      if (i < 10) {
+        // Full detail for 10 most recent
+        const exSummary = exercises.map((e) => {
+          const setSummary = e.sets.map((s) => `Set${s.setNumber}: ${s.weight}lbs x ${s.reps}${s.completed ? '' : ' (FAILED)'}${s.rpe ? ` RPE${s.rpe}` : ''}`).join(', ');
+          return `  - ${e.exerciseName}: ${setSummary}`;
+        }).join('\n');
+        recentSessionData += `\n${session.date} — ${session.planName || 'Session'}${typeLabel}${session.feedback ? ` (Feedback: ${session.feedback})` : ''}\n${exSummary}\n`;
+      } else {
+        // Condensed for older sessions: just exercise names with avg weight
+        const exSummary = exercises.map((e) => {
+          const avgWeight = e.sets.length > 0 ? Math.round(e.sets.reduce((sum, s) => sum + s.weight, 0) / e.sets.length) : 0;
+          return `  - ${e.exerciseName}: avg ${avgWeight}lbs x ${e.sets[0]?.reps ?? '?'}`;
+        }).join('\n');
+        recentSessionData += `\n${session.date} — ${session.planName || 'Session'}${typeLabel}\n${exSummary}\n`;
+      }
     }
+
+    // Recommendation history summary (last 10)
+    let recommendationSummary = '';
+    try {
+      const recs = await db.recommendations.orderBy('createdAt').reverse().limit(10).toArray();
+      if (recs.length > 0) {
+        recommendationSummary = recs.map((r) =>
+          `[${r.acknowledged ? '✓' : '○'}] ${r.type} ${r.exercise ? `(${r.exercise})` : ''}: ${r.message}`
+        ).join('\n');
+      }
+    } catch { /* ignore */ }
 
     const allPlans = app.plans.map((p) => {
       const exNames = p.exercises.map((pe) => {
@@ -112,6 +136,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       allPlans,
       exerciseCatalog,
       recentSessionData,
+      recommendationSummary,
       activeSessionId: app.activeSessionId,
       preferences: [] as string[],
     });
@@ -146,18 +171,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       // Parse and execute actions
       const actions = parseActions(response);
-      const results = await executeActions(actions, app, response);
+      const execResult: ExecuteActionsResult = await executeActions(actions, app, response);
 
       const assistantMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
         content: response,
         timestamp: Date.now(),
-        actions: results,
+        actions: execResult.results,
       };
 
-      setMessages((prev) => [...prev, assistantMsg]);
-      messagesRef.current = [...messagesRef.current, assistantMsg];
+      const newMessages = [...messagesRef.current, assistantMsg];
+
+      // Inject query results as system messages so AI sees them next turn
+      if (execResult.queryResults && execResult.queryResults.length > 0) {
+        for (const qr of execResult.queryResults) {
+          newMessages.push(qr);
+        }
+      }
+
+      setMessages(newMessages);
+      messagesRef.current = newMessages;
 
       // Persist chat history
       await upsertPreference(
