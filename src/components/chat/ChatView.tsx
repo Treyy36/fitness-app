@@ -7,7 +7,7 @@ export function ChatView() {
   const { messages, isStreaming, sendMessage, clearChat, hasApiKey } = useChat();
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -15,12 +15,19 @@ export function ChatView() {
     }
   }, [messages]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     const trimmed = input.trim();
     if (!trimmed || isStreaming) return;
     setInput('');
     await sendMessage(trimmed);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
   };
 
   return (
@@ -78,14 +85,15 @@ export function ChatView() {
       {/* Input */}
       <form onSubmit={handleSubmit} className="px-4 py-3 bg-slate-900/80 border-t border-slate-800 shrink-0">
         <div className="flex gap-2">
-          <input
+          <textarea
             ref={inputRef}
-            type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
             placeholder={hasApiKey ? 'Ask about your workout...' : 'Set API key in Settings first...'}
             disabled={!hasApiKey}
-            className="flex-1 bg-slate-800 text-white placeholder-slate-500 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-brand-500 transition disabled:opacity-50"
+            rows={1}
+            className="flex-1 bg-slate-800 text-white placeholder-slate-500 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-brand-500 transition disabled:opacity-50 resize-none"
           />
           <button
             type="submit"

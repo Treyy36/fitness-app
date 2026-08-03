@@ -9,7 +9,7 @@ import { SettingsView } from './components/settings/SettingsView';
 
 export function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename="/fitness-app">
       <AppProvider>
         <ChatProvider>
           <div className="flex flex-col h-dvh bg-slate-950 safe-top">

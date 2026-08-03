@@ -1,6 +1,6 @@
 # Data Flow
 
-End-to-end walkthrough: "What happens when I type 'today's workout'?"
+End-to-end walkthrough of the agentic execution loop with native tool calling, replacing the legacy `<!--ACTION-->` regex pattern.
 
 ## Flow 1: Requesting Today's Workout
 
@@ -9,267 +9,218 @@ User: "today's workout"
     │
     ▼
 ChatContext.sendMessage("today's workout")
-    │
     ├─ Checks: hasApiKey? → yes
     ├─ Adds user message to state
     │
     ▼
-buildContext() gathers live state:
-    │
-    ├─ new Date().getDay() → 1 (Monday)
-    ├─ app.getPlanForDay(1) → Push A plan
-    │   └─ {name:"Push A", exercises:[
-    │       {exerciseId:1, sets:3, reps:10},  // Machine Chest Press
-    │       {exerciseId:3, sets:3, reps:10},  // Incline DB Press
-    │       ...
-    │     ]}
-    ├─ app.plans → all 5 plans
-    ├─ app.exercises → 17 exercises grouped by category
-    ├─ db.sessions (last 20) → recent history (full detail for 10 most recent, condensed for older)
-    ├─ db.recommendations (last 10) → past recommendations with acknowledged status
+buildContext() gathers live state → buildSystemPrompt() assembles prompt
     │
     ▼
-buildSystemPrompt({
-    today: "Monday",
-    todayDayIndex: 1,
-    todaysPlan: {
-        name: "Push A",
-        exercises: [
-            "Machine Chest Press — 3 sets x 10 reps",
-            "Incline Dumbbell Press — 3 sets x 10 reps",
-            ...
-        ]
-    },
-    allPlans: "Push A [Mon]: Machine Chest Press (3x10), ...",
-    exerciseCatalog: "chest: Machine Chest Press, Incline DB Press, Pec Deck\n...",
-    recentSessionData: "2026-07-27 — Push A\n  - Machine Chest Press: Set1: 80lbs x 10...",
-    recommendationSummary: "[○] weight_increase (Machine Chest Press): Hit 3×10 at 80lb...\n..."
-})
+┌─ Execution Loop (iteration 1) ──────────────────────────┐
+│  POST to DeepSeek with 13 tool definitions + message    │
+│  Body: { model:"deepseek-chat", messages:[...],          │
+│          tools:[...], tool_choice:"auto" }               │
+│      ↓                                                   │
+│  Response: { finish_reason: "stop", content: "..." }    │
+│  → No tool calls needed, exit loop                      │
+└──────────────────────────────────────────────────────────┘
     │
     ▼
-Assembles full system prompt (coaching persona + context)
-    │
-    ▼
-POST https://api.deepseek.com/v1/chat/completions
-Headers: Authorization: Bearer sk-...
-Body: {
-    model: "deepseek-chat",
-    messages: [
-        {role:"system", content:"<full coaching prompt>"},
-        ...last 10 conversation turns,
-        {role:"user", content:"today's workout"}
-    ],
-    temperature: 0.7,
-    max_tokens: 2048
-}
-    │
-    ▼
-DeepSeek response (example):
-"Here's your Push A workout for today, athlete:
-
-| Exercise | Sets×Reps | Working Weight |
-|---|---|---|
-| Machine Chest Press | 3×10 | 80 lb |
-| Incline Dumbbell Press | 3×10 | 25 lb each |
-| Machine Shoulder Press | 3×10 | 40 lb |
-| Pec Deck | 3×12 | 60 lb |
-| Lateral Raise | 3×15 | 10 lb each |
-| Cable Triceps Pushdown | 3×12 | 20 lb |
-
-Form cue: Keep shoulder blades retracted on chest press. Let me know when you're done!"
-    │
-    ▼
-parseActions(response) → [] (no ACTION blocks — just information)
-    │
-    ▼
-stripActions(response) → same text (nothing to strip)
-    │
-    ▼
-setMessages([...messages, {role:"assistant", content, actions:[]}])
-    │
-    ▼
-ChatView renders the message with markdown
+Final response displayed: workout table with exercises, weights, form cues
+ChatView renders with markdown, no action badges (no tools called)
 ```
 
-## Flow 2: Logging a Completed Workout
+## Flow 2: Logging a Completed Workout (with substitution)
 
 ```
-User: "workout complete"
+User: "workout complete — swapped incline DB for plate-loaded incline press at 90lbs"
     │
     ▼
-ChatContext.sendMessage("workout complete")
+ChatContext.sendMessage(...) → buildContext() includes today's Push A plan
     │
     ▼
-buildContext() → Same as above — includes today's Push A plan
+┌─ Execution Loop (iteration 1) ──────────────────────────┐
+│  POST to DeepSeek with tools + message                  │
+│      ↓                                                   │
+│  Response: finish_reason: "tool_calls"                   │
+│  tool_calls: [{                                          │
+│    function: { name: "log_session", arguments: {         │
+│      planName: "Push A", sessionType: "standard",       │
+│      exercises: [                                        │
+│        {name:"Machine Chest Press", sets:[{weight:80,...}]},
+│        {name:"Plate-Loaded Incline Press", sets:[{weight:90,...}]}
+│      ],                                                  │
+│      substitutions: [{                                   │
+│        planned: "Incline Dumbbell Press",                │
+│        actual: "Plate-Loaded Incline Press"              │
+│      }]                                                  │
+│    }}                                                    │
+│  }]                                                      │
+│      ↓                                                   │
+│  executeToolCall("log_session", args):                   │
+│      ├─ db.sessions.add(...) → sessionId: 7             │
+│      ├─ db.sessionExercises.add(...) per exercise       │
+│      ├─ Substitution tracked with session               │
+│      ├─ app.completeSession(7)                          │
+│      └─ app.refreshSessions()                           │
+│      ↓                                                   │
+│  Tool result appended to conversation → continue loop   │
+└──────────────────────────────────────────────────────────┘
     │
     ▼
-DeepSeek with context: today's plan + the message "workout complete"
+┌─ Execution Loop (iteration 2) ──────────────────────────┐
+│  POST to DeepSeek (AI sees tool result in context)      │
+│      ↓                                                   │
+│  Response: finish_reason: "stop"                         │
+│  Content: "Push A logged! Noted the substitution.        │
+│  If you prefer plate-loaded going forward, I can         │
+│  update the plan template. 💪"                           │
+│  → Exit loop                                             │
+└──────────────────────────────────────────────────────────┘
     │
     ▼
-AI infers: All exercises completed as prescribed
-Generates response with ACTION block:
-"Push A logged! Solid work. Chest Press is progressing well — 
-we'll look at bumping weight next week. 💪
-
-<!--ACTION:{"action":"log_session","data":{
-  "planName":"Push A",
-  "exercises":[
-    {"name":"Machine Chest Press","sets":[
-      {"setNumber":1,"reps":10,"weight":80,"completed":true},
-      {"setNumber":2,"reps":10,"weight":80,"completed":true},
-      {"setNumber":3,"reps":10,"weight":80,"completed":true}
-    ]},
-    ...all 6 exercises...
-  ],
-  "feedback":"All exercises completed as prescribed",
-  "sessionType":"standard"
-}}-->"
-    │
-    ▼
-parseActions(response)
-    │
-    ├─ Regex: /<!--ACTION:(.*?)-->/g
-    ├─ Match 1: {"action":"log_session","data":{...}}
-    └─ Returns: [{action:"log_session", data:{...}}]
-    │
-    ▼
-stripActions(response) → Gets text without ACTION block
-    │
-    ▼
-executeActions([{action:"log_session", data:{...}}])
-    │
-    ├─ Finds plan "Push A" via app.getPlanByName()
-    ├─ db.sessions.add({planId, planName:"Push A", date:"2026-07-29", ...})
-    │   → returns sessionId: 7
-    ├─ For each exercise in data.exercises:
-    │   db.sessionExercises.add({sessionId:7, exerciseId, exerciseName, sets})
-    ├─ db.sessions.update(7, {completedAt: now, feedback: ...})
-    └─ app.refreshSessions()
-    │
-    ▼
-setMessages([...messages, {
-    role:"assistant",
-    content:"Push A logged! Solid work...",
-    actions:[{type:"log_session", success:true, summary:"Session #7 logged"}]
-}])
-    │
-    ▼
-UI updates:
-    ├─ Chat shows AI response with green ✓ badge
-    ├─ Settings → session count increments
-    └─ History tab → new session appears
+UI updates: Chat shows response + ✓ badge, History shows actual exercises (not template)
 ```
 
-## Flow 3: Getting Recommendations
+## Flow 3: Getting Recommendations (multi-tool chain)
 
 ```
 User: "any suggestions?"
     │
     ▼
-Same initial flow → DeepSeek receives full context including session history
+┌─ Execution Loop (iteration 1) ──────────────────────────┐
+│  POST to DeepSeek                                        │
+│      ↓                                                   │
+│  tool_calls: [{                                          │
+│    function: { name: "query_sessions",                   │
+│      arguments: { limit: 20 } }                          │
+│  }]                                                      │
+│      ↓                                                   │
+│  executeToolCall → returns 20 sessions with exercise data│
+│  Result appended to conversation                         │
+└──────────────────────────────────────────────────────────┘
     │
     ▼
-AI analyzes patterns:
-    - Machine Chest Press: 80×10 for 3 consecutive sessions → time to increase
-    - DB Curl: 10lb, struggling with form → keep weight, focus on technique
+┌─ Execution Loop (iteration 2) ──────────────────────────┐
+│  POST to DeepSeek (AI now sees 20 sessions)              │
+│      ↓                                                   │
+│  tool_calls: [{                                          │
+│    function: { name: "compute",                          │
+│      arguments: { formula: "plateau_detect", weeks: 4 }  │
+│    }                                                     │
+│  }]                                                      │
+│      ↓                                                   │
+│  executeToolCall → "Machine Chest Press: 3 sessions at 80lb"│
+└──────────────────────────────────────────────────────────┘
     │
     ▼
-AI response with recommendation ACTION:
-"Here's what I see in your data:
-
-**Machine Chest Press**: You've hit 3×10 at 80lb for 3 sessions straight. 
-Time to try 85lb next Push day. Keep 1-2 reps in reserve.
-
-**Dumbbell Curl**: Holding at 10lb with strict form is exactly right. 
-Don't increase until all reps feel controlled.
-
-<!--ACTION:{"action":"save_recommendation","data":{
-  "type":"weight_increase",
-  "exercise":"Machine Chest Press",
-  "message":"Hit 3×10 at 80lb for 3 sessions. Time to try 85lb.",
-  "action":"Increase Machine Chest Press from 80lb to 85lb"
-}}-->"
+┌─ Execution Loop (iteration 3) ──────────────────────────┐
+│  POST to DeepSeek (AI has plateau analysis)              │
+│      ↓                                                   │
+│  tool_calls: [{                                          │
+│    function: { name: "save_recommendation",              │
+│      arguments: { type:"weight_increase",                │
+│        exercise:"Machine Chest Press",                   │
+│        message:"Hit 3×10 at 80lb — time for 85lb" }     │
+│    }                                                     │
+│  }]                                                      │
+│      ↓                                                   │
+│  executeToolCall → saves recommendation to DB            │
+└──────────────────────────────────────────────────────────┘
     │
     ▼
-executeActions saves recommendation to DB
+┌─ Execution Loop (iteration 4) ──────────────────────────┐
+│  Response: finish_reason: "stop"                         │
+│  Content: "Here's what I see: Chest Press at 80lb for    │
+│  3 sessions — time for 85lb. DB Curl holding at 10lb     │
+│  with strict form is exactly right..."                   │
+│  → Exit loop                                             │
+└──────────────────────────────────────────────────────────┘
     │
     ▼
-Recommendation appears in chat, stored in recommendations table
+Recommendation saved + analysis shown — all in one user turn
 ```
 
-## Flow 4: Editing a Past Session (Chat)
+## Flow 4: Editing a Past Session
 
 ```
 User: "fix my bench press on Monday to 85lbs"
     │
     ▼
-Same initial flow → DeepSeek receives full context
+┌─ Execution Loop (iteration 1) ──────────────────────────┐
+│  tool_calls: [{                                          │
+│    function: { name: "query_sessions",                   │
+│      arguments: { planName: "Push A" }                   │
+│    }                                                     │
+│  }]                                                      │
+│      ↓                                                   │
+│  executeToolCall → returns sessions, AI identifies #7    │
+└──────────────────────────────────────────────────────────┘
     │
     ▼
-AI identifies the session and generates update_session ACTION:
-"I found your Monday Push A session. Updating Machine Chest Press to 85lbs.
-
-<!--ACTION:{"action":"update_session","data":{
-  "sessionId":7,
-  "exercises":[
-    {"name":"Machine Chest Press","sets":[
-      {"setNumber":1,"reps":10,"weight":85,"completed":true},
-      {"setNumber":2,"reps":10,"weight":85,"completed":true},
-      {"setNumber":3,"reps":10,"weight":85,"completed":true}
-    ]},
-    ...other exercises unchanged...
-  ]
-}}-->"
+┌─ Execution Loop (iteration 2) ──────────────────────────┐
+│  tool_calls: [{                                          │
+│    function: { name: "update_session",                   │
+│      arguments: { sessionId: 7, exercises: [             │
+│        {name:"Machine Chest Press", sets:[{weight:85,...}]}
+│      ]}                                                  │
+│    }                                                     │
+│  }]                                                      │
+│      ↓                                                   │
+│  executeToolCall → deletes old exercises, inserts updated│
+│  db.sessions.update(7, ...), app.refreshSessions()       │
+└──────────────────────────────────────────────────────────┘
     │
     ▼
-executeActions handles update_session:
-    ├─ db.sessions.update(7, { feedback, sessionType })
-    ├─ db.sessionExercises.where('sessionId').equals(7).delete()  // remove old
-    ├─ For each exercise in data.exercises:
-    │   db.sessionExercises.add(...)  // insert updated
-    └─ app.refreshSessions()
-    │
-    ▼
-UI updates → History tab shows corrected weights
+┌─ Execution Loop (iteration 3) ──────────────────────────┐
+│  Response: finish_reason: "stop"                         │
+│  "Updated your Monday Push A session. Chest Press        │
+│  corrected to 85lbs. History tab reflects the change."   │
+│  → Exit loop                                             │
+└──────────────────────────────────────────────────────────┘
 ```
 
-## Flow 5: Querying History / RPE Trends (Two-Turn)
+## Flow 5: Querying and Analyzing (same-turn, no "ok" needed)
 
 ```
-User: "show me RPE trends for Machine Chest Press"
+User: "analyze my chest press RPE trend and suggest weight changes"
     │
     ▼
-Same initial flow → DeepSeek receives context
+┌─ Execution Loop (iteration 1) ──────────────────────────┐
+│  tool_calls: [{                                          │
+│    function: { name: "get_rpe_trend",                    │
+│      arguments: { exerciseName: "Machine Chest Press" }  │
+│    }                                                     │
+│  }]                                                      │
+│      ↓                                                   │
+│  executeToolCall → RPE data: avg 7.2, 6 sessions        │
+└──────────────────────────────────────────────────────────┘
     │
     ▼
-AI generates get_rpe_trend query ACTION:
-"Let me pull up your RPE data for Machine Chest Press.
-
-<!--ACTION:{"action":"get_rpe_trend","data":{"exerciseName":"Machine Chest Press"}}-->"
+┌─ Execution Loop (iteration 2) ──────────────────────────┐
+│  tool_calls: [{                                          │
+│    function: { name: "compute",                          │
+│      arguments: {                                        │
+│        formula: "progression_rate",                      │
+│        exercise: "Machine Chest Press", weeks: 4         │
+│      }                                                   │
+│    }                                                     │
+│  }]                                                      │
+│      ↓                                                   │
+│  executeToolCall → +5 lbs over 4 weeks, 1.25 lbs/week   │
+└──────────────────────────────────────────────────────────┘
     │
     ▼
-executeActions handles get_rpe_trend:
-    ├─ Queries all sessionExercises matching "Machine Chest Press"
-    ├─ Extracts RPE values across all sessions
-    ├─ Calculates avg RPE, per-session breakdowns
-    └─ Returns queryResults as system message:
-        "\n📈 RPE Trend Analysis for "Machine Chest Press":
-         2026-07-28 — Machine Chest Press: Set1: 80lbs x 10 @RPE7, Set2: 80lbs x 10 @RPE8, ...
-         2026-07-21 — Machine Chest Press: Set1: 70lbs x 10 @RPE6, ...
-         Summary: 6 sessions, 18 total sets. Average RPE: 7.2"
-    │
-    ▼
-System message injected into messagesRef.current
-    │
-    ▼
-User: "ok" (next message)
-    │
-    ▼
-AI now sees RPE trend data in context and can analyze:
-"Your Machine Chest Press RPE has been creeping up from ~6 to ~8 over the last 3 weeks.
-This suggests the weight is appropriately challenging. No need to increase yet —
-let's hold at 80lbs and focus on clean reps."
+┌─ Execution Loop (iteration 3) ──────────────────────────┐
+│  Response: finish_reason: "stop"                         │
+│  Content: "Your Chest Press RPE has been 7-8 for 3 weeks │
+│  with steady progression (+5lbs/month). I recommend      │
+│  adding 5lbs next session. Suggestion saved."            │
+│  → Exit loop                                             │
+└──────────────────────────────────────────────────────────┘
 ```
+
+**Key difference**: No more "ok" follow-up. The AI queried → computed → responded all in one turn.
 
 ## Key Data Relationships During Flow
 
@@ -282,35 +233,51 @@ exercises[id=1,3,5,6,...] → Machine Chest Press, Incline DB Press, ...
     ↓ builds
 System prompt with full context (20 sessions + 10 recs)
     ↓ sent to
-DeepSeek API
+DeepSeek API (with 13 tool definitions as JSON Schema)
     ↓ returns
-Natural language + <!--ACTION--> blocks
+Structured response (content + optional tool_calls)
 
-User message "workout complete"
-    ↓ AI generates
-log_session action (with sessionType)
+User message "workout complete" (with substitution)
+    ↓ AI calls
+log_session tool (with substitutions field)
     ↓ writes
-sessions[id=7] + sessionExercises[...]
+sessions[id=7] + sessionExercises[...] with actual exercise names
     ↓ refreshes
-AppContext.sessions → UI updates
+AppContext.sessions → UI updates with correct (not template) exercises
 
-User message "fix my bench press"
-    ↓ AI generates
-update_session action
-    ↓ deletes + re-inserts
-sessionExercises for session #7
-    ↓ refreshes
-AppContext.sessions → History tab shows corrected data
+User message "any suggestions?"
+    ↓ AI chains in one turn
+query_sessions → compute(plateau_detect) → save_recommendation
+    ↓
+Recommendations saved + analysis shown
 
 User message "show RPE trends"
-    ↓ AI generates
-get_rpe_trend action
-    ↓ queries + formats
-RPE data across all matching sessions
-    ↓ injects system message
-AI sees trend data on next user message → can analyze
+    ↓ AI chains in one turn
+get_rpe_trend → compute(progression_rate)
+    ↓
+Full analysis returned — no "ok" needed
+```
+
+## Execution Loop Pattern (replaces all legacy flows)
+
+```
+User sends message
+    ↓
+buildContext() + buildSystemPrompt()
+    ↓
+while (iteration < 10):
+    POST to DeepSeek (messages + tools)
+    ↓
+    if finish_reason == "stop": break → show final content
+    if finish_reason == "tool_calls":
+        for each tool_call:
+            executeToolCall(name, args)  ← toolRegistry lookup
+            append {role:"tool", content:result}
+        continue loop (AI sees results)
+    ↓
+Final response displayed with ActionResult badges
 ```
 
 ---
 
-*Last updated: 2026-07-30 · Updated for sessionType, edit/delete flows, two-turn query pattern, 20-session context*
+*Last updated: 2026-08-02 · Complete rewrite for native tool calling, execution loop, same-turn queries, exercise substitutions*

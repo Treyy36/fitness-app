@@ -1,7 +1,8 @@
 import { createContext, useContext, useState, useCallback, type ReactNode, useRef, useEffect } from 'react';
 import { useApp } from './AppContext';
 import { sendToDeepSeek, buildSystemPrompt } from '../services/deepseek';
-import { parseActions, executeActions, type ExecuteActionsResult } from '../services/intentParser';
+import { getToolDefinitions, executeToolCall, toActionResult } from '../services/toolRegistry';
+import type { ToolCall } from '../services/toolRegistry';
 import type { WorkoutPlan } from '../db/database';
 import { db, upsertPreference } from '../db/database';
 
@@ -29,6 +30,8 @@ interface ChatContextValue {
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
+
+const MAX_TOOL_ITERATIONS = 10;
 
 export function ChatProvider({ children }: { children: ReactNode }) {
   const app = useApp();
@@ -158,37 +161,79 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     try {
       const systemPrompt = await buildContext();
-      const conversationHistory = messagesRef.current.slice(-10).map((m) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-      }));
+      const tools = getToolDefinitions();
 
-      const response = await sendToDeepSeek({
-        apiKey,
-        systemPrompt,
-        messages: [...conversationHistory, { role: 'user' as const, content: text }],
-      });
+      // Build conversation history for the API (last 10 turns)
+      const conversationHistory: { role: 'user' | 'assistant' | 'tool'; content: string; tool_call_id?: string }[] = [];
+      const recentMessages = messagesRef.current.slice(-10);
+      for (const m of recentMessages) {
+        if (m.role === 'user' || m.role === 'assistant') {
+          conversationHistory.push({ role: m.role, content: m.content });
+        }
+      }
 
-      // Parse and execute actions
-      const actions = parseActions(response);
-      const execResult: ExecuteActionsResult = await executeActions(actions, app, response);
+      // ─── Execution Loop ───────────────────────────────────────────
+      const loopMessages: { role: 'user' | 'assistant' | 'tool'; content: string; tool_call_id?: string; tool_calls?: ToolCall[] }[] = [
+        ...conversationHistory,
+        { role: 'user' as const, content: text },
+      ];
 
+      let finalContent = '';
+      const allActionResults: ActionResult[] = [];
+      let iteration = 0;
+
+      while (iteration < MAX_TOOL_ITERATIONS) {
+        iteration++;
+
+        const response = await sendToDeepSeek({
+          apiKey,
+          systemPrompt,
+          messages: loopMessages,
+          tools,
+        });
+
+        // If the AI returned content, accumulate it (use last content as final)
+        if (response.content) {
+          finalContent = response.content;
+        }
+
+        // If no tool calls, we're done
+        if (response.finishReason === 'stop' || response.toolCalls.length === 0) {
+          // Add assistant message to loop (for history)
+          loopMessages.push({
+            role: 'assistant',
+            content: response.content ?? '',
+          });
+          break;
+        }
+
+        // Add assistant message with tool calls to loop
+        loopMessages.push({
+          role: 'assistant',
+          content: response.content ?? '',
+          tool_calls: response.toolCalls,
+        });
+
+        // Execute each tool call
+        for (const toolCall of response.toolCalls) {
+          const toolResult = await executeToolCall(toolCall, app);
+          loopMessages.push(toolResult);
+
+          // Track action result for UI
+          allActionResults.push(toActionResult(toolCall, toolResult));
+        }
+      }
+
+      // ─── Build Final Response ─────────────────────────────────────
       const assistantMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: response,
+        content: finalContent || '(No response)',
         timestamp: Date.now(),
-        actions: execResult.results,
+        actions: allActionResults.length > 0 ? allActionResults : undefined,
       };
 
       const newMessages = [...messagesRef.current, assistantMsg];
-
-      // Inject query results as system messages so AI sees them next turn
-      if (execResult.queryResults && execResult.queryResults.length > 0) {
-        for (const qr of execResult.queryResults) {
-          newMessages.push(qr);
-        }
-      }
 
       setMessages(newMessages);
       messagesRef.current = newMessages;

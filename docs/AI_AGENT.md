@@ -1,6 +1,6 @@
 # AI Agent
 
-How the DeepSeek-powered coaching persona works — system prompt engineering, intent parsing, and agentic workflow.
+How the DeepSeek-powered coaching persona works — system prompt engineering, native tool calling, and the agentic execution loop.
 
 ## Architecture
 
@@ -23,25 +23,29 @@ buildSystemPrompt() — assembles full prompt
     ├── Equipment available (Planet Fitness machines)
     ├── Current working weights per exercise
     ├── Coaching observations and philosophy
-    └── Response format instructions (<!--ACTION--> blocks)
+    └── Tool usage instructions (13 available tools)
     ↓
-sendToDeepSeek() — HTTP POST
-    ├── model: "deepseek-chat"
-    ├── system: full coaching prompt
-    ├── messages: last 10 conversation turns + current message
-    ├── temperature: 0.7
-    └── max_tokens: 2048
+┌─ Execution Loop (while true, max 10 iterations) ──────────┐
+│                                                            │
+│  sendToDeepSeek() — HTTP POST with tools array             │
+│      ├── model: "deepseek-chat"                            │
+│      ├── system: full coaching prompt                      │
+│      ├── messages: conversation history + current message  │
+│      ├── tools: 13 function definitions (JSON Schema)      │
+│      ├── tool_choice: "auto"                               │
+│      ├── temperature: 0.7                                  │
+│      └── max_tokens: 2048                                  │
+│      ↓                                                     │
+│  DeepSeek Response                                         │
+│      ├── finish_reason: "stop" → exit loop                 │
+│      └── finish_reason: "tool_calls" →                     │
+│          ├── executeToolCall() per tool                    │
+│          ├── Append tool results to conversation           │
+│          └── Continue loop (AI sees results)               │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
     ↓
-AI Response (natural language + embedded actions)
-    ↓
-parseActions() — regex extraction
-    └── /<!--ACTION:(.*?)-->/g → ParsedAction[]
-    ↓
-executeActions() — database mutations + queries
-    ├── Mutations: log_session, update_session, delete_session, create_plan, update_plan, add_exercise, save_recommendation
-    └── Queries: get_session_history, get_recommendation_history, get_rpe_trend (return data as system messages)
-    ↓
-Query results injected as system messages (AI sees them next turn)
+Final AI Response (natural language)
     ↓
 UI updates (messages, sessions, plans refresh)
 ```
@@ -81,41 +85,63 @@ Pre-loaded observations about the athlete's strengths/weaknesses:
 - Last 10 recommendations with acknowledged status (closes the feedback loop)
 - Session type counts (standard/test/deload)
 
-### 6. Response Format
-Explicit instructions for the `<!--ACTION:{...}-->` format with available action types and their schemas.
+### 6. Tool Instructions
+The AI is given access to 13 function tools via DeepSeek's native function-calling API. Tool schemas are defined as JSON Schema in `src/services/toolRegistry.ts`. The AI is instructed to use tools proactively — query before claiming, mutate when confirmed.
 
-## Intent Parsing
+## Tool Calling & Execution Loop
 
 ### How it works
 
-The AI embeds JSON action blocks in HTML comment syntax within its natural language response:
+Instead of embedding `<!--ACTION-->` blocks in text, the AI uses DeepSeek's native function-calling API. The app sends a `tools` array with JSON Schema definitions, and the AI returns structured `tool_calls` with `name` and `arguments`.
 
-```
-Great session! Everything logged. Chest Press is progressing well. 💪
+The execution loop (`ChatContext.sendMessage()`) wraps this in a `while(true)`:
 
-<!--ACTION:{"action":"log_session","data":{"planName":"Push A","exercises":[...]}}-->
-```
+1. Call DeepSeek with conversation history + tools
+2. If `finish_reason === "stop"` → break; show final text response
+3. If `finish_reason === "tool_calls"` → for each tool call:
+   - Look up the handler in `toolRegistry`
+   - Execute against IndexedDB
+   - Append `{role: "tool", tool_call_id, content: result}` to conversation
+   - Continue loop (AI sees tool results and can call more tools or respond)
+4. Safety: max 10 iterations per turn
 
-The app:
-1. Receives the full response text
-2. `parseActions()` extracts all `<!--ACTION:...-->` blocks via regex
-3. `stripActions()` removes them for display rendering
-4. `executeActions()` processes each action against the database
+This means the AI can chain multiple operations in a single user message — query data, analyze it, mutate the database, and respond — all without the user sending follow-up messages.
 
-### Available Actions
+### Available Tools (13 total)
 
-| Action | Trigger | What it does |
-|---|---|---|
-| `log_session` | "workout complete", "done" | Creates session + sessionExercises with full set data. Supports `sessionType` for standard/test/deload. |
-| `create_plan` | "create a PPL split", plan definition | Creates a new workoutPlan with exercise mappings |
-| `update_plan` | "add X to Push A", "swap Pec Deck for..." | Updates an existing plan's exercises, name, or day mid-week |
-| `update_session` | "fix my bench weight", "that was actually 85lbs" | Edits a past session's exercises, feedback, or sessionType |
-| `delete_session` | "delete session 7", "remove that duplicate" | Permanently removes a session + all its exercise data |
-| `add_exercise` | "add Plate-Loaded Incline Press" | Adds a new exercise to the catalog on the fly |
-| `save_recommendation` | After session, "any suggestions?" | Saves a recommendation with type, message, action |
-| `get_session_history` | "show my chest history", "all sessions last month" | Queries sessions by exercise, date range, plan, or sessionType. Results as system message. |
-| `get_recommendation_history` | "what recs did I get?", "biceps recommendations" | Queries past recommendations by exercise or type. Results as system message. |
-| `get_rpe_trend` | "show RPE trends for Chest Press" | Returns per-session RPE data for a given exercise across all history. Results as system message. |
+**Mutation Tools:**
+
+| Tool | Purpose |
+|---|---|
+| `log_session` | Log a completed workout with exercises, sets, reps, weight, RPE, substitutions |
+| `create_plan` | Create a new workout plan template |
+| `update_plan` | Modify an existing plan's exercises, name, or day |
+| `update_session` | Edit a past session's exercises, feedback, or sessionType |
+| `delete_session` | Permanently remove a session + all exercise data |
+| `add_exercise` | Add a new exercise to the catalog on the fly |
+| `save_recommendation` | Save a coaching recommendation |
+
+**Query Tools:**
+
+| Tool | Purpose |
+|---|---|
+| `query_sessions` | Query session history with filters (exercise, date, type, plan) |
+| `query_recommendations` | Query past recommendations by exercise, type, or status |
+| `get_rpe_trend` | RPE trend analysis across all sessions for an exercise |
+
+**Generic Primitives (composeable — unbounded capabilities):**
+
+| Tool | Purpose |
+|---|---|
+| `db_query` | Read any table with filters, joins, sorting, date ranges |
+| `db_mutate` | Create/update/delete records in any table |
+| `compute` | Run analytics: progression_rate, estimated_1rm, plateau_detect, muscle_balance |
+
+**Meta Tool:**
+
+| Tool | Purpose |
+|---|---|
+| `request_capability` | File a request for new infrastructure when the AI hits a capability gap |
 
 ### Agentic Logging
 
@@ -132,32 +158,50 @@ The AI can infer what to log from context. Examples:
 | "delete session 7, it was a duplicate" | Uses `delete_session` to remove + cascade |
 | "fix my bench press on Monday to 85lbs" | Uses `update_session` to correct weight |
 
-### Query Actions (two-turn pattern)
+### Query Resolution (same-turn)
 
-Query actions (`get_session_history`, `get_recommendation_history`, `get_rpe_trend`) work differently from mutations. The AI includes them in its response, the app executes them, and the results are injected as **system messages** that the AI sees on the **next** user message:
+Unlike the old two-turn pattern, query tools resolve in the same user message. The execution loop feeds query results back to the AI within the same iteration, so the AI can query → analyze → respond all in one turn:
 
 ```
-User: "show my machine chest press RPE trend"
+User: "analyze my chest press RPE trend and suggest weight changes"
     ↓
-AI responds: "Let me look that up for you. 
-<!--ACTION:{...get_rpe_trend...}-->"
+AI calls: get_rpe_trend("Machine Chest Press")
+    ↓ (same iteration)
+AI receives RPE data, calls: compute(formula="progression_rate", exercise="Machine Chest Press")
+    ↓ (same iteration)
+AI receives progression data, responds: "Your RPE has been 7-8 for 3 weeks.
+Time to add 5lbs. I've saved a recommendation."
+AI calls: save_recommendation(...)
     ↓
-App executes query, injects system message with trend data
-    ↓
-User: "ok" (or any next message)
-    ↓
-AI now sees the RPE trend data in context and can discuss it
+Final response shown to user with all analysis complete
+```
 
-### Action Execution Safety
+No more "ok" follow-up messages needed.
 
-`executeActions()` in `intentParser.ts` handles each action type:
-- Validates data shape before writing
-- Includes the plan name in session for future reference
-- Stores exercise names as snapshots (survives catalog changes)
-- Catches and reports errors per-action (doesn't abort the batch)
-- `delete_session` cascades to remove all associated `sessionExercises` rows
+### Exercise Substitutions
+
+The `log_session` tool supports a `substitutions` field for tracking when the athlete deviates from the plan template. The system prompt explicitly instructs the AI to log what was ACTUALLY done, not what the plan says.
+
+| User says | AI logs |
+|---|---|
+| "workout complete" | All exercises in today's plan at prescribed weights |
+| "workout complete but failed last set on bench" | All exercises; bench set 3 marked `completed: false` |
+| "swapped incline DB for plate-loaded incline press at 90lbs" | Logs substitution: `{planned: "Incline DB Press", actual: "Plate-Loaded Incline Press"}` |
+| "added an extra set of lateral raises" | Logs plan exercises + bonus exercise |
+| "deload day, everything at 50%" | Logs with `sessionType: 'deload'` and reduced weights |
+
+If the athlete consistently substitutes an exercise (3+ sessions), the AI is instructed to suggest permanently updating the plan template via `update_plan`.
+
+### Tool Execution Safety
+
+`executeToolCall()` in `toolRegistry.ts` handles each tool:
+- Validates table names against a whitelist (prevents arbitrary DB access)
+- Resolves exercise names to IDs for plan/session operations
+- Catches and reports errors per-tool (doesn't abort the batch)
+- `delete_session` cascades to remove all associated `sessionExercises`
 - `update_session` replaces exercise data atomically (delete old + insert new)
-- Query actions return `ExecuteActionsResult` with both `results` and `queryResults` — query data is injected as system messages for the next AI turn
+- `db_mutate` validates operations against whitelisted tables
+- Query tools return structured data that the AI reasons about in the same turn
 
 ## Offline Behavior
 
@@ -173,10 +217,14 @@ To modify the AI's behavior:
 | File | What to change |
 |---|---|
 | `src/services/deepseek.ts` | System prompt persona, coaching philosophy, athlete profile |
+| `src/services/toolRegistry.ts` | Add new tool definitions + handlers, modify existing tool behavior |
 | `src/db/seed.ts` | Exercise catalog, workout plans, seed history |
-| `src/services/intentParser.ts` | Add new action types |
 | `src/services/recommendations.ts` | Modify local fallback rules |
+
+## Capability Requests
+
+The AI can self-diagnose gaps in its toolset and file formal capability requests via the `request_capability` tool. These appear in Settings → Capability Requests, where you can approve, dismiss, or copy them as prompts for VS Code Copilot to implement.
 
 ---
 
-*Last updated: 2026-07-30 · Updated for 10 total actions (edit/delete/query), sessionType, expanded context, two-turn query pattern*
+*Last updated: 2026-08-02 · Complete rewrite for native tool calling, execution loop, 13 tools, generic primitives, same-turn queries, exercise substitutions, capability requests*

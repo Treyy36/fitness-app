@@ -1,9 +1,18 @@
+import type { ToolDefinition, ToolCall } from './toolRegistry';
+
 export interface DeepSeekRequest {
   apiKey: string;
   systemPrompt: string;
-  messages: { role: 'user' | 'assistant'; content: string }[];
+  messages: { role: 'user' | 'assistant' | 'tool'; content: string; tool_call_id?: string; tool_calls?: ToolCall[] }[];
+  tools?: ToolDefinition[];
   temperature?: number;
   maxTokens?: number;
+}
+
+export interface DeepSeekResponse {
+  content: string | null;
+  toolCalls: ToolCall[];
+  finishReason: 'stop' | 'tool_calls' | 'length';
 }
 
 export function buildSystemPrompt(context: {
@@ -86,53 +95,64 @@ ${context.recentSessionData || 'No sessions recorded yet.'}
 ${context.recommendationSummary || 'No recommendations logged yet.'}
 
 ${prefs}
-## Response Format
-When you need the app to perform an action (log a session, create a plan, save a recommendation), embed a JSON action block in your response using HTML comment syntax:
+## Available Tools
+You have access to function tools that let you query and mutate the application database. Use them whenever you need to:
+- Log a completed workout (log_session)
+- Create or modify workout plans (create_plan, update_plan)
+- Edit or delete past sessions (update_session, delete_session)
+- Add exercises to the catalog (add_exercise)
+- Save coaching recommendations (save_recommendation)
+- Query session history for analysis (query_sessions)
+- Check past recommendations (query_recommendations)
+- Analyze RPE trends (get_rpe_trend)
+- Log body weight measurements (log_bodyweight)
+- Log daily nutrition macros (log_macros)
+- Request new capabilities when you hit a gap (request_capability)
 
-<!--ACTION:{"action":"<action_name>","data":{...}}-->
+You can call multiple tools in a single response. The results will be fed back to you so you can continue reasoning. Use tools proactively — query data before making claims, and mutate data when the athlete confirms an action.
 
-Available actions:
-- **log_session**: { action: "log_session", data: { planName: string, planId?: number, exercises: Array<{ name: string, sets: Array<{ setNumber: number, reps: number, weight: number, completed: boolean, rpe?: number }> }>, feedback?: string, sessionType?: "standard"|"test"|"deload" } } — set sessionType to "test" for experimental/adjustment sessions, "deload" for reduced-volume sessions. Defaults to "standard".
-- **create_plan**: { action: "create_plan", data: { name: string, dayOfWeek?: number, exercises: Array<{ name: string, sets: number, reps: number }> } }
-- **update_plan**: { action: "update_plan", data: { planId: number, exercises?: Array<{ name: string, sets: number, reps: number }>, name?: string, dayOfWeek?: number } } — modify a plan's exercises, name, or day mid-week without creating a new plan.
-- **update_session**: { action: "update_session", data: { sessionId: number, exercises?: Array<{ name: string, sets: Array<{ setNumber: number, reps: number, weight: number, completed: boolean, rpe?: number }> }>, feedback?: string, notes?: string, sessionType?: "standard"|"test"|"deload" } } — edit a past session (weight, reps, RPE, feedback, or session type).
-- **delete_session**: { action: "delete_session", data: { sessionId: number } } — permanently remove a session that was logged incorrectly or is a duplicate.
-- **add_exercise**: { action: "add_exercise", data: { name: string, category: "chest"|"back"|"shoulders"|"biceps"|"triceps"|"quads"|"hamstrings"|"glutes"|"calves"|"abs"|"other", defaultSets?: number, defaultReps?: number } } — add a new exercise to the catalog on the fly.
-- **save_recommendation**: { action: "save_recommendation", data: { type: "weight_increase"|"weight_decrease"|"exercise_swap"|"rest_more"|"form_tip"|"general", exercise?: string, message: string, action?: string } }
-- **get_session_history**: { action: "get_session_history", data: { exerciseName?: string, dateFrom?: string, dateTo?: string, planName?: string, sessionType?: string, limit?: number } } — query session history with filters. Results appear as system data you can reference in your next response.
-- **get_recommendation_history**: { action: "get_recommendation_history", data: { exercise?: string, type?: string, acknowledged?: boolean, limit?: number } } — query past recommendations. Results appear as system data.
-- **get_rpe_trend**: { action: "get_rpe_trend", data: { exerciseName: string } } — get RPE trend data across all sessions for a specific exercise. Results appear as system data.
-
-## Guidelines
+## Critical Instructions
 - Be concise but encouraging. Use emojis sparingly for tone. Address me as you would an athlete you're coaching.
-- When logging, ALWAYS include an ACTION block. Even if the user just says "workout complete", log the full session based on today's plan with today's prescribed weights/sets/reps.
+- When logging a session, ALWAYS use the log_session tool. Even if the user just says "workout complete", log the full session. You may infer that all exercises from today's plan were completed as prescribed if the athlete doesn't specify otherwise.
+- **LOG WHAT WAS ACTUALLY DONE, NOT WHAT THE PLAN SAYS.** If the athlete substituted an exercise, log the substitution using the substitutions field in log_session. If they changed weight/reps, log the actual values. Plans are templates, not rigid prescriptions.
 - When they say "workout complete but I failed X", mark only the failed sets as incomplete.
 - For recommendations, reference specific data points (e.g., "You've hit 10 reps at 85lbs for 2 sessions — time to add 5lbs").
 - Maintain this training history permanently and continue expanding it after every workout.
 - If no plan exists for today and they ask for their workout, tell them and offer to help create one.
 - If the user says something that changes your behavior going forward, note it in your response and apply it.
-- Use sessionType: "standard" for normal sessions, "test" for one-off experiments or adjustment sessions, "deload" for reduced-volume/weight sessions. Include this in log_session.
-- When the user asks about their history, trends, or past recommendations, use the get_session_history, get_rpe_trend, or get_recommendation_history actions to fetch data. Reference the system data that appears in your next response.
-- If the user says they logged something wrong (wrong weight, wrong exercise name, duplicate), offer to use update_session or delete_session to fix it.`;
+- Use sessionType: "standard" for normal sessions, "test" for one-off experiments, "deload" for reduced-volume/weight sessions.
+- When analyzing history or trends, use query_sessions or get_rpe_trend FIRST, then respond with insights based on the data.
+- If you encounter a task you cannot complete with your available tools, file a request_capability. Do NOT just apologize — explain what's blocked and what tools would help.
+- If the athlete mentions their weight or nutrition, proactively offer to log it. Use log_bodyweight for weight (encourage weekly weigh-ins for trend data) and log_macros for daily nutrition.
+- When the athlete shares macros, log them. Calories are auto-computed from protein/carbs/fat if not provided.
+- Use compute(formula="weight_trend") to analyze weight changes over time. Use compute(formula="macro_averages") to show nutrition averages.
+- If the athlete consistently substitutes an exercise (3+ sessions), suggest permanently updating the plan template using update_plan.`;
 }
 
-export async function sendToDeepSeek(req: DeepSeekRequest): Promise<string> {
+export async function sendToDeepSeek(req: DeepSeekRequest): Promise<DeepSeekResponse> {
+  const body: Record<string, any> = {
+    model: 'deepseek-chat',
+    messages: [
+      { role: 'system', content: req.systemPrompt },
+      ...req.messages,
+    ],
+    temperature: req.temperature ?? 0.7,
+    max_tokens: req.maxTokens ?? 2048,
+    stream: false,
+  };
+
+  if (req.tools && req.tools.length > 0) {
+    body.tools = req.tools;
+    body.tool_choice = 'auto';
+  }
+
   const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${req.apiKey}`,
     },
-    body: JSON.stringify({
-      model: 'deepseek-chat',
-      messages: [
-        { role: 'system', content: req.systemPrompt },
-        ...req.messages,
-      ],
-      temperature: req.temperature ?? 0.7,
-      max_tokens: req.maxTokens ?? 2048,
-      stream: false,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -141,5 +161,23 @@ export async function sendToDeepSeek(req: DeepSeekRequest): Promise<string> {
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? '';
+  const choice = data.choices?.[0];
+  const message = choice?.message;
+  const finishReason: 'stop' | 'tool_calls' | 'length' = choice?.finish_reason ?? 'stop';
+
+  // Extract tool calls from the response
+  const toolCalls: ToolCall[] = (message?.tool_calls || []).map((tc: any) => ({
+    id: tc.id,
+    type: 'function' as const,
+    function: {
+      name: tc.function.name,
+      arguments: tc.function.arguments,
+    },
+  }));
+
+  return {
+    content: message?.content ?? null,
+    toolCalls,
+    finishReason,
+  };
 }

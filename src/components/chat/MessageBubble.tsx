@@ -1,6 +1,7 @@
 import type { ChatMessage } from '../../context/ChatContext';
 import { stripActions } from '../../services/intentParser';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface Props {
   message: ChatMessage;
@@ -23,8 +24,8 @@ export function MessageBubble({ message }: Props) {
         {isUser ? (
           <p>{displayContent}</p>
         ) : (
-          <div className="prose prose-invert prose-sm max-w-none [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5 [&_strong]:text-brand-300">
-            <ReactMarkdown>{displayContent}</ReactMarkdown>
+          <div className="prose prose-sm max-w-none">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
           </div>
         )}
 

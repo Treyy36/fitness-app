@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useChat } from '../../context/ChatContext';
 import { db } from '../../db/database';
+import { CapabilityRequestsView } from './CapabilityRequestsView';
 
 export function SettingsView() {
   const { setApiKey, hasApiKey } = useChat();
@@ -90,6 +91,11 @@ export function SettingsView() {
               <span className="text-white">{dbStats.sessions}</span>
             </div>
           </div>
+        </section>
+
+        {/* Capability Requests */}
+        <section>
+          <CapabilityRequestsView />
         </section>
 
         {/* Danger Zone */}

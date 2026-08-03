@@ -24,8 +24,8 @@ System design, component tree, and data flow for GymTracker AI.
 │        │                   │                     │
 │  ┌─────┴─────┐   ┌────────┴──────────┐          │
 │  │  Dexie.js │   │  DeepSeek API     │          │
-│  │  IndexedDB│   │  (direct fetch)   │          │
-│  │  6 tables │   │  api.deepseek.com │          │
+│  │  IndexedDB│   │  (native func.)   │          │
+│  │  7 tables │   │  api.deepseek.com │          │
 │  └───────────┘   └───────────────────┘          │
 └─────────────────────────────────────────────────┘
 ```
@@ -50,7 +50,7 @@ fitness-app/
     ├── App.tsx                   # BrowserRouter + layout shell
     ├── index.css                 # Tailwind + iOS safe-area fixes
     ├── db/
-    │   ├── database.ts           # Dexie schema: 6 tables, types, upsert helper
+    │   ├── database.ts           # Dexie schema: 7 tables (v3), types, upsert helper
     │   └── seed.ts               # Exercise catalog, PPL plans, 6-session history
     ├── hooks/
     │   ├── useWorkoutPlans.ts    # CRUD for plans + exercises + addExercise
@@ -58,10 +58,11 @@ fitness-app/
     │   └── useRecommendations.ts # CRUD for AI recommendations
     ├── context/
     │   ├── AppContext.tsx         # Global state: plans, exercises, sessions, init
-    │   └── ChatContext.tsx        # Chat state, API key, sendMessage, buildContext
+    │   └── ChatContext.tsx        # Chat state, API key, sendMessage, execution loop
     ├── services/
-    │   ├── deepseek.ts           # System prompt builder + DeepSeek API client
-    │   ├── intentParser.ts       # <!--ACTION--> extraction + action execution
+    │   ├── deepseek.ts           # System prompt builder + DeepSeek API (tools support)
+    │   ├── toolRegistry.ts       # Tool definitions (JSON Schema) + handler dispatch
+    │   ├── intentParser.ts       # [DEPRECATED] Replaced by toolRegistry.ts
     │   └── recommendations.ts    # Local fallback progression rules (offline)
     └── components/
         ├── layout/BottomNav.tsx  # Tab bar: Chat | Plans | History | Settings
@@ -70,7 +71,9 @@ fitness-app/
         │   └── MessageBubble.tsx # Markdown rendering + action result badges
         ├── plans/PlanListView.tsx# Browse workout plan templates
         ├── history/SessionHistoryView.tsx # Session log with type filters, edit/delete UI
-        └── settings/SettingsView.tsx # API key, stats, reset
+        └── settings/
+            ├── SettingsView.tsx  # API key, stats, reset, capability requests
+            └── CapabilityRequestsView.tsx # AI-filed infrastructure requests
 ```
 
 ## Key Design Decisions
@@ -78,8 +81,11 @@ fitness-app/
 ### Chat-first architecture
 The Chat tab is the default route. All primary interactions happen through natural language. The Plans and History tabs are secondary views for browsing structured data.
 
-### Agentic intent parsing
-AI responses contain hidden `<!--ACTION:{"action":"log_session","data":{...}}-->` blocks. The app strips these from display text and executes them as database operations. This allows the AI to both converse naturally AND mutate application state.
+### Native tool calling + execution loop
+The AI uses DeepSeek's native function-calling API (`tools` array + `tool_choice: "auto"`). A `while(true)` execution loop in `ChatContext.sendMessage()` allows the AI to chain multiple tool calls in a single user turn — query data, analyze it, mutate the database, and respond — all without follow-up messages. Max 10 iterations per turn for safety. Tool definitions live in `src/services/toolRegistry.ts` with JSON Schema definitions and handler functions.
+
+### 13 tools: specific + generic primitives
+7 mutation/query tools cover common operations (log_session, create_plan, query_sessions, etc.). 3 generic primitives (`db_query`, `db_mutate`, `compute`) give the AI unbounded capabilities — it can query any table, mutate any record, and run analytical computations by composing these primitives. A meta tool (`request_capability`) lets the AI file structured requests when it hits a capability gap.
 
 ### Local-first with external AI
 All workout data lives in IndexedDB. The only external service is DeepSeek API. Offline: tracking works (manual logging); AI features degrade gracefully.
@@ -93,8 +99,8 @@ Sessions store their own snapshots of exercise names and set data. Modifying a w
 ### Session type tagging
 Sessions carry an optional `sessionType` field (`'standard'` | `'test'` | `'deload'`). This distinguishes normal workouts from experimental sessions and reduced-volume deload days, enabling cleaner trend analysis. Filter chips in the History tab allow viewing by type.
 
-### Two-turn query actions
-`get_session_history`, `get_recommendation_history`, and `get_rpe_trend` are query actions that return data as system messages. The AI issues the query in its response, and the results appear in context on the next user message — enabling deep-dive analytics without architectural changes to the one-shot AI call pattern.
+### Same-turn query resolution
+Query tools (`query_sessions`, `get_rpe_trend`, `db_query`, `compute`) return results within the execution loop. The AI receives data in the same iteration and can immediately act on it — query → analyze → respond → mutate, all in one user message. No more two-turn "ok" follow-ups.
 
 ## Component Communication
 
@@ -107,13 +113,17 @@ buildContext() → reads plans, exercises, recent sessions from AppContext + DB
     ↓
 buildSystemPrompt() → assembles full coaching prompt with athlete profile
     ↓
-sendToDeepSeek() → POST to api.deepseek.com/v1/chat/completions
+┌─ Execution Loop ──────────────────────────────────┐
+│  sendToDeepSeek() → POST with tools array          │
+│      ↓                                             │
+│  if tool_calls: executeToolCall() → IndexedDB      │
+│      ↓                                             │
+│  tool results fed back → loop (AI sees results)     │
+│      ↓                                             │
+│  if stop: exit loop with final text                │
+└────────────────────────────────────────────────────┘
     ↓
-parseActions() → extracts <!--ACTION:{...}--> blocks from response
-    ↓
-executeActions() → writes to IndexedDB (create/update/delete session, plans, exercises, query history)
-    ↓
-Query results (if any) → injected as system messages for next AI turn
+Final response displayed in ChatView
     ↓
 refreshSessions() → updates AppContext state
     ↓
@@ -122,4 +132,4 @@ SessionHistoryView re-renders with new data
 
 ---
 
-*Last updated: 2026-07-30 · Updated for sessionType, edit/delete, query actions, 20-session context*
+*Last updated: 2026-08-02 · Rewritten for native tool calling, execution loop, toolRegistry (13 tools), 7 tables, same-turn queries, capability requests*

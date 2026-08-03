@@ -100,6 +100,53 @@ Key-value store for app configuration.
 
 **Stored preferences**: `deepseek_api_key`, `chat_history`.
 
+### `capabilityRequests` — AI-Requested Infrastructure (v3)
+
+Requests filed by the AI when it encounters a capability gap. Reviewed in Settings.
+
+| Field | Type | Index | Description |
+|---|---|---|---|
+| `id` | `string` (UUID) | Primary | Unique request ID |
+| `title` | `string` | — | Short title (e.g., "Scheduling Engine") |
+| `description` | `string` | — | What capability is needed and why |
+| `problem` | `string` | — | What task was blocked |
+| `blockedFeature` | `string` | — | What user-facing feature is blocked |
+| `suggestedTools` | `string[]` | — | Tool names the AI thinks would help |
+| `priority` | `string` | Yes | `blocking`, `enhancement`, `nice_to_have` |
+| `conversationContext` | `string` | — | The conversation that triggered the request |
+| `status` | `string` | Yes | `pending` → `approved` → `building` → `deployed` or `dismissed` |
+| `createdAt` | `string` | — | ISO timestamp |
+| `deployedAt` | `string?` | — | When the capability was deployed |
+
+**Migration (v3)**: Adds the `capabilityRequests` table with indexes on `status` and `priority`.
+
+### `bodyWeightLogs` — Body Weight Tracking (v4)
+
+Weekly weigh-in measurements for trend analysis.
+
+| Field | Type | Index | Description |
+|---|---|---|---|
+| `id` | `++` (auto) | Primary | Auto-increment ID |
+| `date` | `string` | Yes | ISO date of weigh-in |
+| `weight` | `number` | — | Body weight in pounds |
+| `notes` | `string?` | — | Optional notes (e.g., "morning, fasted") |
+
+### `macroLogs` — Daily Nutrition Tracking (v4)
+
+Daily macro and calorie intake for nutrition monitoring.
+
+| Field | Type | Index | Description |
+|---|---|---|---|
+| `id` | `++` (auto) | Primary | Auto-increment ID |
+| `date` | `string` | Yes | ISO date |
+| `protein` | `number` | — | Protein in grams |
+| `carbs` | `number` | — | Carbohydrates in grams |
+| `fat` | `number` | — | Fat in grams |
+| `calories` | `number?` | — | Total kcal (auto-computed: 4p + 4c + 9f if not provided) |
+| `notes` | `string?` | — | Optional notes (e.g., meal details) |
+
+**Migration (v4)**: Adds the `bodyWeightLogs` and `macroLogs` tables with indexes on `date`.
+
 ## Entity Relationships
 
 ```
@@ -115,6 +162,9 @@ sessions ◄─────────────────┘
 recommendations
 
 userPreferences (standalone key-value)
+capabilityRequests (standalone, AI-filed infrastructure requests)
+bodyWeightLogs (standalone, weekly weigh-in tracking)
+macroLogs (standalone, daily nutrition tracking)
 ```
 
 ## CRUD Access Patterns
@@ -129,8 +179,16 @@ userPreferences (standalone key-value)
 | Add exercise | `useExercises().addExercise(name, category)` | Adds to catalog on the fly |
 | Get last session's weight | `useSessions().getLastSessionExercise(exerciseId)` | Finds most recent session with that exercise |
 | Save API key | `upsertPreference('deepseek_api_key', key)` | Safe upsert (no duplicate key errors) |
-| Get session history | `db.sessions.orderBy('date').reverse().limit(20).toArray()` | For system prompt context (expanded from 5 → 20) |
+| Get session history | `db.sessions.orderBy('date').reverse().limit(20).toArray()` | For system prompt context |
 | Query by sessionType | `db.sessions.where('sessionType').equals('deload').toArray()` | Filter sessions by type |
+| AI generic query | `db_query` tool via `toolRegistry` | Any table, any filter, optional joins |
+| AI generic mutate | `db_mutate` tool via `toolRegistry` | Create/update/delete any record |
+| AI log weight | `log_bodyweight` tool via `toolRegistry` | Inserts into bodyWeightLogs |
+| AI log macros | `log_macros` tool via `toolRegistry` | Inserts into macroLogs (auto-computes calories) |
+| AI analyze weight trend | `compute(formula="weight_trend")` via `toolRegistry` | Reads bodyWeightLogs, computes delta + weekly rate |
+| AI analyze macro averages | `compute(formula="macro_averages")` via `toolRegistry` | Reads macroLogs, computes daily averages |
+| AI file capability request | `request_capability` tool | Inserts into capabilityRequests |
+| Get pending requests | `db.capabilityRequests.where('status').equals('pending').toArray()` | Settings UI |
 
 ## Seed Strategy
 
@@ -145,4 +203,4 @@ To re-seed: Settings → Reset All Data → page reloads → seed runs fresh.
 
 ---
 
-*Last updated: 2026-07-30 · Updated for v2 migration (sessionType, edit/delete, addExercise)*
+*Last updated: 2026-08-02 · Added bodyWeightLogs + macroLogs tables (v4 migration), body/nutrition tracking tools*

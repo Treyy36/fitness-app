@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
-import { db, type SessionExercise, type SessionType } from '../../db/database';
+import { db, type SessionExercise, type SessionType, type BodyWeightLog, type MacroLog } from '../../db/database';
 
 const SESSION_TYPE_COLORS: Record<SessionType, string> = {
   standard: 'bg-blue-900/30 text-blue-300',
@@ -26,10 +26,22 @@ export function SessionHistoryView() {
   const [editSessionType, setEditSessionType] = useState<SessionType>('standard');
   const [editExercises, setEditExercises] = useState<SessionExercise[]>([]);
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+  const [dataView, setDataView] = useState<'workouts' | 'weight' | 'macros'>('workouts');
+  const [weightLogs, setWeightLogs] = useState<BodyWeightLog[]>([]);
+  const [macroLogs, setMacroLogs] = useState<MacroLog[]>([]);
 
   const filteredSessions = typeFilter === 'all'
     ? sessions
     : sessions.filter((s) => (s.sessionType || 'standard') === typeFilter);
+
+  // Load weight/macro data when view changes
+  useEffect(() => {
+    if (dataView === 'weight') {
+      db.bodyWeightLogs.orderBy('date').reverse().toArray().then(setWeightLogs);
+    } else if (dataView === 'macros') {
+      db.macroLogs.orderBy('date').reverse().toArray().then(setMacroLogs);
+    }
+  }, [dataView]);
 
   const toggleExpand = async (sessionId: number) => {
     if (expandedId === sessionId) {
@@ -106,17 +118,25 @@ export function SessionHistoryView() {
   return (
     <div className="flex flex-col h-full">
       <header className="px-4 py-3 bg-slate-900/80 border-b border-slate-800 shrink-0">
-        <h1 className="text-lg font-bold text-white">Session History</h1>
-        <p className="text-xs text-slate-400">{sessions.length} session{sessions.length !== 1 ? 's' : ''} recorded</p>
+        <h1 className="text-lg font-bold text-white">History</h1>
+        <p className="text-xs text-slate-400">
+          {dataView === 'workouts' && `${sessions.length} session${sessions.length !== 1 ? 's' : ''} recorded`}
+          {dataView === 'weight' && `${weightLogs.length} weigh-in${weightLogs.length !== 1 ? 's' : ''}`}
+          {dataView === 'macros' && `${macroLogs.length} day${macroLogs.length !== 1 ? 's' : ''} logged`}
+        </p>
 
-        {/* Filter chips */}
-        <div className="flex gap-1.5 mt-2 flex-wrap">
-          {FILTER_OPTIONS.map((opt) => (
+        {/* View toggle */}
+        <div className="flex gap-1.5 mt-2 mb-2">
+          {([
+            { label: '🏋️ Workouts', value: 'workouts' as const },
+            { label: '⚖️ Weight', value: 'weight' as const },
+            { label: '🍽️ Macros', value: 'macros' as const },
+          ]).map((opt) => (
             <button
               key={opt.value}
-              onClick={() => setTypeFilter(opt.value)}
-              className={`text-xs px-2.5 py-1 rounded-full transition ${
-                typeFilter === opt.value
+              onClick={() => setDataView(opt.value)}
+              className={`text-xs px-3 py-1.5 rounded-lg transition ${
+                dataView === opt.value
                   ? 'bg-brand-600 text-white'
                   : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'
               }`}
@@ -125,17 +145,39 @@ export function SessionHistoryView() {
             </button>
           ))}
         </div>
+
+        {/* Session type filter chips (only for workouts) */}
+        {dataView === 'workouts' && (
+          <div className="flex gap-1.5 flex-wrap">
+            {FILTER_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setTypeFilter(opt.value)}
+                className={`text-xs px-2.5 py-1 rounded-full transition ${
+                  typeFilter === opt.value
+                    ? 'bg-brand-600 text-white'
+                    : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-2">
-        {filteredSessions.length === 0 && (
-          <div className="text-center text-slate-500 py-10">
-            <p className="text-4xl mb-2">📊</p>
-            <p className="text-sm">
-              {typeFilter !== 'all' ? `No ${typeFilter} sessions found.` : 'No sessions yet. Complete a workout to see it here!'}
-            </p>
-          </div>
-        )}
+        {/* ── Workout View ── */}
+        {dataView === 'workouts' && (
+          <>
+            {filteredSessions.length === 0 && (
+              <div className="text-center text-slate-500 py-10">
+                <p className="text-4xl mb-2">📊</p>
+                <p className="text-sm">
+                  {typeFilter !== 'all' ? `No ${typeFilter} sessions found.` : 'No sessions yet. Complete a workout to see it here!'}
+                </p>
+              </div>
+            )}
 
         {/* Delete confirmation modal */}
         {deleteConfirmId !== null && (
@@ -241,9 +283,11 @@ export function SessionHistoryView() {
             <div key={session.id}>
               <div className="w-full bg-slate-800/50 rounded-xl border border-slate-700/50">
                 {/* Session header — click to expand */}
-                <button
+                <div
                   onClick={() => toggleExpand(session.id!)}
-                  className="w-full p-4 text-left flex items-center justify-between"
+                  className="w-full p-4 text-left flex items-center justify-between cursor-pointer"
+                  role="button"
+                  tabIndex={0}
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -276,7 +320,7 @@ export function SessionHistoryView() {
                     </button>
                     <span className="text-slate-500 text-xs ml-1">{isExpanded ? '▲' : '▼'}</span>
                   </div>
-                </button>
+                </div>
 
                 {/* Feedback preview */}
                 {session.feedback && !isExpanded && (
@@ -323,6 +367,64 @@ export function SessionHistoryView() {
             </div>
           );
         })}
+          </>
+        )}
+
+        {/* Weight View */}
+        {dataView === 'weight' && (
+          <div className="space-y-2">
+            {weightLogs.length === 0 ? (
+              <div className="text-center text-slate-500 py-10">
+                <p className="text-4xl mb-2">⚖️</p>
+                <p className="text-sm">No weigh-ins yet. Ask the AI to log your weight!</p>
+              </div>
+            ) : (
+              weightLogs.map((w) => (
+                <div key={w.id} className="bg-slate-800/50 rounded-xl border border-slate-700/50 p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-white font-semibold text-lg">{w.weight} lbs</p>
+                      <p className="text-xs text-slate-400">
+                        {new Date(w.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                      </p>
+                    </div>
+                    {w.notes && <p className="text-xs text-slate-500 italic max-w-[60%] text-right">{w.notes}</p>}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* Macros View */}
+        {dataView === 'macros' && (
+          <div className="space-y-2">
+            {macroLogs.length === 0 ? (
+              <div className="text-center text-slate-500 py-10">
+                <p className="text-4xl mb-2">🍽️</p>
+                <p className="text-sm">No macros logged yet. Ask the AI to log your nutrition!</p>
+              </div>
+            ) : (
+              macroLogs.map((m) => (
+                <div key={m.id} className="bg-slate-800/50 rounded-xl border border-slate-700/50 p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs text-slate-400">
+                      {new Date(m.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                    </p>
+                    <p className="text-white font-semibold text-sm">{m.calories ?? (m.protein*4 + m.carbs*4 + m.fat*9)} kcal</p>
+                  </div>
+                  <div className="flex gap-3 text-xs">
+                    <span className="text-red-300 bg-red-900/20 px-2 py-1 rounded-lg">P: {m.protein}g</span>
+                    <span className="text-yellow-300 bg-yellow-900/20 px-2 py-1 rounded-lg">C: {m.carbs}g</span>
+                    <span className="text-blue-300 bg-blue-900/20 px-2 py-1 rounded-lg">F: {m.fat}g</span>
+                  </div>
+                  {m.notes && <p className="text-xs text-slate-500 mt-2 italic">{m.notes}</p>}
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
       </div>
     </div>
   );

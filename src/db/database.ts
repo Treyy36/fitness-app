@@ -79,6 +79,37 @@ export interface Recommendation {
   createdAt: string;
 }
 
+export interface CapabilityRequest {
+  id: string; // UUID
+  title: string;
+  description: string;
+  problem: string;
+  blockedFeature: string;
+  suggestedTools: string[];
+  priority: 'blocking' | 'enhancement' | 'nice_to_have';
+  conversationContext: string;
+  status: 'pending' | 'approved' | 'building' | 'deployed' | 'dismissed';
+  createdAt: string;
+  deployedAt?: string;
+}
+
+export interface BodyWeightLog {
+  id?: number;
+  date: string;
+  weight: number;
+  notes?: string;
+}
+
+export interface MacroLog {
+  id?: number;
+  date: string;
+  protein: number;
+  carbs: number;
+  fat: number;
+  calories?: number;
+  notes?: string;
+}
+
 export interface UserPreference {
   id?: number;
   key: string;
@@ -94,6 +125,9 @@ export class FitnessDB extends Dexie {
   sessionExercises!: EntityTable<SessionExercise, 'id'>;
   recommendations!: EntityTable<Recommendation, 'id'>;
   userPreferences!: EntityTable<UserPreference, 'id'>;
+  capabilityRequests!: EntityTable<CapabilityRequest, 'id'>;
+  bodyWeightLogs!: EntityTable<BodyWeightLog, 'id'>;
+  macroLogs!: EntityTable<MacroLog, 'id'>;
 
   constructor() {
     super('FitnessDB');
@@ -116,6 +150,15 @@ export class FitnessDB extends Dexie {
           await tx.table('sessions').update(s.id, { sessionType: 'standard' });
         }
       }
+    });
+
+    this.version(3).stores({
+      capabilityRequests: 'id, status, priority, createdAt',
+    });
+
+    this.version(4).stores({
+      bodyWeightLogs: '++id, date',
+      macroLogs: '++id, date',
     });
   }
 }
