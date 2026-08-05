@@ -1,6 +1,6 @@
 # AI Agent
 
-How the DeepSeek-powered coaching persona works — system prompt engineering, native tool calling, and the agentic execution loop.
+**Updated 2026-08-05** — now receives full date/time context (date string + time) via system prompt. Uses local timezone-aware date formatting. Tool calls write to Firebase Firestore (cloud-synced).
 
 ## Architecture
 

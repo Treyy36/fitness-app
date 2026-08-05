@@ -4,20 +4,89 @@ System design, component tree, and data flow for GymTracker AI.
 
 ## Overview
 
+React PWA + Firebase Firestore + DeepSeek AI coaching agent. Cross-device sync via Google Auth.
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | React 19 + TypeScript 5.7 |
+| Build | Vite 6 + vite-plugin-pwa |
+| Styling | Tailwind CSS 4 |
+| Routing | React Router 7 |
+| Auth | Firebase Auth (Google Sign-In) |
+| Database | Firebase Firestore |
+| AI | DeepSeek Chat API (native tool calling) |
+| Charts | Recharts |
+
+## Component Tree
+
 ```
-┌─────────────────────────────────────────────────┐
-│                   PWA Shell                      │
-│  index.html → main.tsx → App.tsx                 │
-│  (iOS meta, manifest, service worker)            │
-├─────────────────────────────────────────────────┤
-│                  React App                       │
-│  ┌───────────┐ ┌───────────┐ ┌──────────────┐  │
-│  │ ChatView  │ │ PlanList  │ │ SessionHist  │  │
-│  │ (default) │ │ View      │ │ oryView      │  │
-│  └─────┬─────┘ └───────────┘ └──────────────┘  │
-│        │                                         │
-│  ┌─────┴─────────────────────────────────────┐  │
-│  │            Context Layer                    │  │
+App
+├── AuthProvider (Google sign-in state)
+│   └── AppContent
+│       ├── LoginScreen (when unauthenticated)
+│       └── AppProvider (Firestore data layer, userId from auth)
+│           └── ChatProvider (AI chat state)
+│               ├── BottomNav (💬 Chat | 📈 Data | 📋 Plans | 🏋️ Exercises | ⚙️ Settings)
+│               ├── ChatView (/)
+│               ├── DataDashboard (/data)
+│               │     ├── WeightCard
+│               │     ├── MacroStats (today + weekly)
+│               │     └── TodayWorkoutCard
+│               ├── PlanListView (/plans)
+│               ├── ExerciseListView (/exercises)
+│               ├── MacroHistoryView (/macros)
+│               ├── SessionHistoryView (/history)
+│               └── SettingsView (/settings)
+```
+
+## Data Flow
+
+```
+User signs in (Google) → Firebase Auth → user.uid
+    │
+    ▼
+AppProvider(userId) → loads from Firestore:
+    /users/{uid}/exercises, workoutPlans, sessions, macros, etc.
+    │
+    ├── ChatContext: AI system prompt includes live context
+    ├── DataDashboard: today's macros, planned workout, weight
+    └── All writes go to Firestore → syncs across devices
+```
+
+## Firestore Structure
+
+```
+/users/{uid}/
+  ├── exercises/              collection
+  ├── workoutPlans/            collection (exercises[] embedded)
+  ├── sessions/                collection
+  │     └── {id}/exercises/    subcollection
+  ├── recommendations/         collection
+  ├── bodyWeightLogs/          collection
+  ├── macroLogs/               collection
+  ├── userPreferences/         collection
+  └── capabilityRequests/      collection
+```
+
+## Security
+
+Firestore rules enforce user isolation:
+```
+match /users/{userId}/{document=**} {
+  allow read, write: if request.auth != null && request.auth.uid == userId;
+}
+```
+
+## Offline Support
+
+Firestore SDK provides built-in offline persistence via IndexedDB cache. Writes queue locally and sync when connectivity returns.
+
+---
+
+*Last updated: 2026-08-05 · Firebase migration complete*
+
 │  │  AppContext (plans, sessions, exercises)   │  │
 │  │  ChatContext (messages, API key, send)     │  │
 │  └─────┬───────────────────┬─────────────────┘  │

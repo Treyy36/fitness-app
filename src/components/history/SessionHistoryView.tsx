@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
-import { db, type SessionExercise, type SessionType, type BodyWeightLog, type MacroLog } from '../../db/database';
+import type { SessionExercise, SessionType } from '../../firebase/types';
+import * as fb from '../../firebase';
 
 const SESSION_TYPE_COLORS: Record<SessionType, string> = {
   standard: 'bg-blue-900/30 text-blue-300',
@@ -16,19 +17,19 @@ const FILTER_OPTIONS: { label: string; value: SessionType | 'all' }[] = [
 ];
 
 export function SessionHistoryView() {
-  const { sessions, sessionsLoading, updateSession, deleteSession, refreshSessions } = useApp();
-  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const { sessions, sessionsLoading, updateSession, deleteSession, refreshSessions, userId } = useApp();
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [expandedExercises, setExpandedExercises] = useState<SessionExercise[]>([]);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [typeFilter, setTypeFilter] = useState<SessionType | 'all'>('all');
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [editFeedback, setEditFeedback] = useState('');
   const [editSessionType, setEditSessionType] = useState<SessionType>('standard');
   const [editExercises, setEditExercises] = useState<SessionExercise[]>([]);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [dataView, setDataView] = useState<'workouts' | 'weight' | 'macros'>('workouts');
-  const [weightLogs, setWeightLogs] = useState<BodyWeightLog[]>([]);
-  const [macroLogs, setMacroLogs] = useState<MacroLog[]>([]);
+  const [weightLogs, setWeightLogs] = useState<any[]>([]);
+  const [macroLogs, setMacroLogs] = useState<any[]>([]);
 
   const filteredSessions = typeFilter === 'all'
     ? sessions
@@ -37,28 +38,28 @@ export function SessionHistoryView() {
   // Load weight/macro data when view changes
   useEffect(() => {
     if (dataView === 'weight') {
-      db.bodyWeightLogs.orderBy('date').reverse().toArray().then(setWeightLogs);
+      fb.getAllWeightLogs(userId).then(setWeightLogs);
     } else if (dataView === 'macros') {
-      db.macroLogs.orderBy('date').reverse().toArray().then(setMacroLogs);
+      fb.getAllMacroLogs(userId).then(setMacroLogs);
     }
-  }, [dataView]);
+  }, [dataView, userId]);
 
-  const toggleExpand = async (sessionId: number) => {
+  const toggleExpand = async (sessionId: string) => {
     if (expandedId === sessionId) {
       setExpandedId(null);
       return;
     }
     setExpandedId(sessionId);
     setLoadingDetails(true);
-    const exs = await db.sessionExercises.where('sessionId').equals(sessionId).toArray();
+    const exs = await fb.getSessionExercises(userId, sessionId);
     setExpandedExercises(exs);
     setLoadingDetails(false);
   };
 
-  const startEditing = async (sessionId: number) => {
+  const startEditing = async (sessionId: string) => {
     const session = sessions.find((s) => s.id === sessionId);
     if (!session) return;
-    const exs = await db.sessionExercises.where('sessionId').equals(sessionId).toArray();
+    const exs = await fb.getSessionExercises(userId, sessionId);
     setEditingId(sessionId);
     setEditFeedback(session.feedback || '');
     setEditSessionType(session.sessionType || 'standard');
@@ -84,7 +85,7 @@ export function SessionHistoryView() {
     // Update each exercise's sets
     for (const ex of editExercises) {
       if (ex.id !== undefined) {
-        await db.sessionExercises.update(ex.id, { sets: ex.sets });
+        await fb.updateSessionExercise(userId, editingId, ex.id, { sets: ex.sets });
       }
     }
 

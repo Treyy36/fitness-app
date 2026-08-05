@@ -1,4 +1,5 @@
-import { db, type SetRecord, type Recommendation, type MuscleGroup, type SessionType, upsertPreference } from '../db/database';
+import * as fb from '../firebase';
+import type { SetRecord, Recommendation, MuscleGroup, SessionType } from '../firebase/types';
 import type { ChatMessage, ActionResult } from '../context/ChatContext';
 
 // ─── Tool Definition Types ────────────────────────────────────────────────
@@ -43,19 +44,20 @@ export interface ToolResult {
 // ─── App Context Interface (subset used by tool handlers) ─────────────────
 
 export interface ToolAppContext {
-  getPlanByName: (name: string) => { id?: number; name: string; exercises: Array<{ exerciseId: number; sets: number; reps: number }> } | null;
-  getPlanForDay: (day: number) => { id?: number; name: string; exercises: Array<{ exerciseId: number; sets: number; reps: number }> } | null;
-  createPlan: (plan: any) => Promise<number>;
-  updatePlan: (id: number, updates: any) => Promise<void>;
-  createSession: (session: any) => Promise<number>;
-  completeSession: (id: number, feedback?: string) => Promise<void>;
-  updateSession: (id: number, updates: any) => Promise<void>;
-  deleteSession: (id: number) => Promise<void>;
-  addSessionExercise: (ex: any) => Promise<void>;
-  addExercise: (name: string, category: MuscleGroup, defaultSets?: number, defaultReps?: number) => Promise<number>;
-  exercises: { id?: number; name: string; category: string }[];
+  getPlanByName: (name: string) => { id?: string; name: string; exercises: Array<{ exerciseId: string; targetSets: number; targetReps: number }> } | null;
+  getPlanForDay: (day: number) => { id?: string; name: string; exercises: Array<{ exerciseId: string; targetSets: number; targetReps: number }> } | null;
+  createPlan: (plan: any) => Promise<string>;
+  updatePlan: (id: string, updates: any) => Promise<void>;
+  createSession: (session: any) => Promise<string>;
+  completeSession: (id: string, feedback?: string) => Promise<void>;
+  updateSession: (id: string, updates: any) => Promise<void>;
+  deleteSession: (id: string) => Promise<void>;
+  addSessionExercise: (ex: any) => Promise<string>;
+  addExercise: (name: string, category: MuscleGroup, defaultSets?: number, defaultReps?: number) => Promise<string>;
+  exercises: { id?: string; name: string; category: string }[];
   refreshSessions: () => Promise<void>;
-  setActiveSessionId: (id: number | null) => void;
+  setActiveSessionId: (id: string | null) => void;
+  userId: string;
 }
 
 // ─── Tool Handler Type ────────────────────────────────────────────────────
@@ -360,14 +362,54 @@ const toolDefinitions: Record<string, ToolDefinition> = {
       parameters: {
         type: 'object',
         properties: {
+          description: { type: 'string', description: 'What the athlete ate (e.g., "Breakfast burrito", "Chicken, rice, broccoli"). This is the food description, not a note.' },
           protein: { type: 'number', description: 'Protein in grams' },
           carbs: { type: 'number', description: 'Carbohydrates in grams' },
           fat: { type: 'number', description: 'Fat in grams' },
           calories: { type: 'number', description: 'Total calories (optional — auto-computed from macros if omitted)' },
           date: { type: 'string', description: 'Date (ISO format). Defaults to today.' },
-          notes: { type: 'string', description: 'Optional notes (e.g., meals, diet adherence)' },
+          notes: { type: 'string', description: 'Optional notes (e.g., diet adherence, hunger levels, context about the meal)' },
         },
         required: ['protein', 'carbs', 'fat'],
+      },
+    },
+  },
+
+  update_macros: {
+    type: 'function',
+    function: {
+      name: 'update_macros',
+      description: 'Update an existing macro log entry. Use this to correct or amend previously logged nutrition data — fix inaccurate macros, update the food description, or change the date.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID of the macro log entry to update (obtained from query_macros)' },
+          description: { type: 'string', description: 'Updated food description (what they ate)' },
+          protein: { type: 'number', description: 'Corrected protein in grams' },
+          carbs: { type: 'number', description: 'Corrected carbs in grams' },
+          fat: { type: 'number', description: 'Corrected fat in grams' },
+          calories: { type: 'number', description: 'Corrected calories' },
+          date: { type: 'string', description: 'Corrected date (ISO format)' },
+          notes: { type: 'string', description: 'Updated notes' },
+        },
+        required: ['id'],
+      },
+    },
+  },
+
+  query_macros: {
+    type: 'function',
+    function: {
+      name: 'query_macros',
+      description: 'Query nutrition/macro log entries. Use this to look up past meals, check macro history, or find a specific entry to correct. Returns entries with their IDs for use with update_macros.',
+      parameters: {
+        type: 'object',
+        properties: {
+          dateFrom: { type: 'string', description: 'Start date (ISO format, e.g., "2026-07-01")' },
+          dateTo: { type: 'string', description: 'End date (ISO format)' },
+          limit: { type: 'number', description: 'Max results (default 20)' },
+        },
+        required: [],
       },
     },
   },
@@ -382,7 +424,7 @@ const toolDefinitions: Record<string, ToolDefinition> = {
       parameters: {
         type: 'object',
         properties: {
-          table: { type: 'string', enum: ['sessions', 'sessionExercises', 'exercises', 'workoutPlans', 'recommendations', 'userPreferences', 'capabilityRequests'], description: 'Table to query' },
+          table: { type: 'string', enum: ['sessions', 'sessionExercises', 'exercises', 'workoutPlans', 'recommendations', 'userPreferences', 'capabilityRequests', 'macroLogs', 'bodyWeightLogs'], description: 'Table to query' },
           filters: { type: 'object', description: 'Key-value filters (e.g., {"exerciseName": "Machine Chest Press", "sessionType": "standard"})' },
           join: { type: 'string', description: 'Join with another table. E.g., join "sessionExercises" when querying sessions to get exercise data.' },
           orderBy: { type: 'string', description: 'Field to sort by (e.g., "date"). Prefix with - for descending.' },
@@ -404,7 +446,7 @@ const toolDefinitions: Record<string, ToolDefinition> = {
         type: 'object',
         properties: {
           operation: { type: 'string', enum: ['create', 'update', 'delete'], description: 'Type of mutation' },
-          table: { type: 'string', enum: ['sessions', 'sessionExercises', 'exercises', 'workoutPlans', 'recommendations', 'userPreferences'], description: 'Table to modify' },
+          table: { type: 'string', enum: ['sessions', 'sessionExercises', 'exercises', 'workoutPlans', 'recommendations', 'userPreferences', 'macroLogs', 'bodyWeightLogs'], description: 'Table to modify' },
           id: { type: 'number', description: 'Record ID (required for update/delete)' },
           data: { type: 'object', description: 'Data to write (for create/update). Shape depends on the table.' },
         },
@@ -454,19 +496,35 @@ const toolDefinitions: Record<string, ToolDefinition> = {
   },
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+/** Strip undefined values so Firestore doesn't reject the document. */
+function cleanSets(sets: any[]): SetRecord[] {
+  return sets.map((s) => {
+    const record: any = {
+      setNumber: s.setNumber,
+      reps: s.reps,
+      weight: s.weight,
+      completed: s.completed !== false,
+    };
+    if (s.rpe !== undefined && s.rpe !== null) record.rpe = s.rpe;
+    return record;
+  });
+}
+
 // ─── Tool Handlers ─────────────────────────────────────────────────────────
 
 const toolHandlers: Record<string, ToolHandler> = {
 
   async log_session(args, app) {
-    let plan: { id?: number; name?: string } | null = args.planId ? { id: args.planId } : null;
+    let plan: { id?: string; name?: string } | null = args.planId ? { id: args.planId } : null;
     if (!plan && args.planName) plan = app.getPlanByName(args.planName);
     if (!plan) plan = app.getPlanForDay(new Date().getDay());
 
     const sessionId = await app.createSession({
       planId: plan?.id,
       planName: plan?.name ?? args.planName ?? 'Custom',
-      date: new Date().toISOString().split('T')[0],
+      date: new Date().toLocaleDateString('en-CA'),  // local date (YYYY-MM-DD)
       completedAt: new Date().toISOString(),
       feedback: args.feedback,
       sessionType: (args.sessionType ?? 'standard') as SessionType,
@@ -474,20 +532,19 @@ const toolHandlers: Record<string, ToolHandler> = {
 
     for (const ex of args.exercises || []) {
       const found = app.exercises.find((e) => e.name.toLowerCase() === ex.name.toLowerCase());
-      const sets: SetRecord[] = (ex.sets || []).map((s: any) => ({
-        setNumber: s.setNumber,
-        reps: s.reps,
-        weight: s.weight,
-        completed: s.completed !== false,
-        rpe: s.rpe,
-      }));
+      const sets: SetRecord[] = cleanSets(ex.sets || []);
 
       await app.addSessionExercise({
         sessionId,
-        exerciseId: found?.id ?? 0,
+        exerciseId: found?.id ?? '',
         exerciseName: ex.name,
         sets,
       });
+
+      // Check and update PR
+      for (const set of sets) {
+        await fb.checkAndUpdatePR(app.userId, found?.id ?? '', set.weight, set.reps, new Date().toLocaleDateString('en-CA'));
+      }
     }
 
     await app.completeSession(sessionId, args.feedback);
@@ -508,7 +565,7 @@ const toolHandlers: Record<string, ToolHandler> = {
   async create_plan(args, app) {
     const exerciseIds = (args.exercises || []).map((e: { name: string; sets: number; reps: number }) => {
       const found = app.exercises.find((ex) => ex.name.toLowerCase() === e.name.toLowerCase());
-      return { exerciseId: found?.id ?? 1, sets: e.sets, reps: e.reps };
+      return { exerciseId: found?.id ?? '', targetSets: e.sets, targetReps: e.reps };
     });
 
     await app.createPlan({
@@ -527,7 +584,7 @@ const toolHandlers: Record<string, ToolHandler> = {
     if (args.exercises && Array.isArray(args.exercises)) {
       updates.exercises = args.exercises.map((e: { name: string; sets: number; reps: number }) => {
         const found = app.exercises.find((ex) => ex.name.toLowerCase() === e.name.toLowerCase());
-        return { exerciseId: found?.id ?? 0, sets: e.sets, reps: e.reps };
+        return { exerciseId: found?.id ?? '', targetSets: e.sets, targetReps: e.reps };
       });
     }
     await app.updatePlan(args.planId, updates);
@@ -542,19 +599,15 @@ const toolHandlers: Record<string, ToolHandler> = {
     await app.updateSession(args.sessionId, updates);
 
     if (args.exercises && Array.isArray(args.exercises)) {
-      await db.sessionExercises.where('sessionId').equals(args.sessionId).delete();
+      // Delete existing exercises for this session
+      const existing = await fb.getSessionExercises(app.userId, args.sessionId);
+      await Promise.all(existing.map(e => fb.deleteSessionExerciseById(app.userId, e.id)));
       for (const ex of args.exercises) {
         const found = app.exercises.find((e) => e.name.toLowerCase() === ex.name.toLowerCase());
-        const sets: SetRecord[] = (ex.sets || []).map((s: any) => ({
-          setNumber: s.setNumber,
-          reps: s.reps,
-          weight: s.weight,
-          completed: s.completed !== false,
-          rpe: s.rpe,
-        }));
+        const sets: SetRecord[] = cleanSets(ex.sets || []);
         await app.addSessionExercise({
           sessionId: args.sessionId,
-          exerciseId: found?.id ?? 0,
+          exerciseId: found?.id ?? '',
           exerciseName: ex.name,
           sets,
         });
@@ -576,8 +629,8 @@ const toolHandlers: Record<string, ToolHandler> = {
     return { success: true, summary: `Exercise "${args.name}" added to catalog (ID #${id}).`, data: { id } };
   },
 
-  async save_recommendation(args, _app) {
-    await db.recommendations.add({
+  async save_recommendation(args, app) {
+    await fb.addRecommendation(app.userId, {
       sessionId: args.sessionId,
       type: args.type || 'general',
       exercise: args.exercise,
@@ -589,8 +642,8 @@ const toolHandlers: Record<string, ToolHandler> = {
     return { success: true, summary: `Recommendation saved: ${args.message?.slice(0, 50)}...` };
   },
 
-  async query_sessions(args, _app) {
-    const sessions = await db.sessions.orderBy('date').reverse().toArray();
+  async query_sessions(args, app) {
+    const sessions = await fb.getAllSessions(app.userId);
     const matching: any[] = [];
 
     for (const session of sessions) {
@@ -601,7 +654,7 @@ const toolHandlers: Record<string, ToolHandler> = {
       if (args.dateTo && session.date > args.dateTo) match = false;
 
       if (args.exerciseName && match) {
-        const exs = await db.sessionExercises.where('sessionId').equals(session.id!).toArray();
+        const exs = await fb.getSessionExercises(app.userId, session.id);
         if (!exs.some((e) => e.exerciseName.toLowerCase() === args.exerciseName.toLowerCase())) match = false;
       }
 
@@ -618,7 +671,7 @@ const toolHandlers: Record<string, ToolHandler> = {
     text += `Found ${matching.length} matching sessions (showing ${limited.length}):\n`;
 
     for (const session of limited) {
-      const exs = await db.sessionExercises.where('sessionId').equals(session.id!).toArray();
+      const exs = await fb.getSessionExercises(app.userId, session.id);
       const exSummary = exs.map((e) => {
         const setSummary = e.sets.map((s) => `${s.weight}lbs x ${s.reps}${s.completed ? '' : ' (FAILED)'}${s.rpe ? ` RPE${s.rpe}` : ''}`).join(', ');
         return `  - ${e.exerciseName}: ${setSummary}`;
@@ -642,8 +695,8 @@ const toolHandlers: Record<string, ToolHandler> = {
     };
   },
 
-  async query_recommendations(args, _app) {
-    const allRecs = await db.recommendations.orderBy('createdAt').reverse().toArray();
+  async query_recommendations(args, app) {
+    const allRecs = await fb.getAllRecommendations(app.userId, 100);
     const filtered = allRecs.filter((r) => {
       if (args.exercise && r.exercise?.toLowerCase() !== args.exercise.toLowerCase()) return false;
       if (args.type && r.type !== args.type) return false;
@@ -681,10 +734,19 @@ const toolHandlers: Record<string, ToolHandler> = {
     };
   },
 
-  async get_rpe_trend(args, _app) {
+  async get_rpe_trend(args, app) {
     const exerciseName = args.exerciseName;
-    const allSE = await db.sessionExercises.toArray();
-    const matching = allSE.filter((se) => se.exerciseName.toLowerCase() === exerciseName.toLowerCase());
+    // Get all session exercises for the user
+    const sessions = await fb.getAllSessions(app.userId);
+    const matching: any[] = [];
+
+    for (const session of sessions) {
+      const exs = await fb.getSessionExercises(app.userId, session.id);
+      const matched = exs.filter((se) => se.exerciseName.toLowerCase() === exerciseName.toLowerCase());
+      for (const se of matched) {
+        matching.push({ ...se, _sessionDate: session.date });
+      }
+    }
 
     if (matching.length === 0) {
       const queryResult: ChatMessage = {
@@ -702,9 +764,8 @@ const toolHandlers: Record<string, ToolHandler> = {
     let rpeCount = 0;
 
     for (const se of matching) {
-      const session = await db.sessions.get(se.sessionId);
-      const date = session?.date ?? 'unknown';
-      const setSummaries = se.sets.map((s) => {
+      const date = se._sessionDate ?? 'unknown';
+      const setSummaries = se.sets.map((s: any) => {
         if (s.rpe !== undefined) { rpeSum += s.rpe; rpeCount++; }
         totalSets++;
         return `Set${s.setNumber}: ${s.weight}lbs x ${s.reps}${s.rpe ? ` @RPE${s.rpe}` : ''}${s.completed ? '' : ' (FAILED)'}`;
@@ -733,117 +794,136 @@ const toolHandlers: Record<string, ToolHandler> = {
 
   // ─── Generic Primitive Handlers ────────────────────────────────────
 
-  async db_query(args, _app) {
+  async db_query(args, app) {
     const table = args.table as string;
     const limit = args.limit || 50;
-
-    // Whitelist table access
-    const validTables = ['sessions', 'sessionExercises', 'exercises', 'workoutPlans', 'recommendations', 'userPreferences', 'capabilityRequests'];
+    const validTables = ['sessions', 'sessionExercises', 'exercises', 'workoutPlans', 'recommendations', 'userPreferences', 'capabilityRequests', 'macroLogs', 'bodyWeightLogs'];
     if (!validTables.includes(table)) {
       return { success: false, summary: `Invalid table: ${table}. Valid: ${validTables.join(', ')}` };
     }
 
     let results: any[] = [];
 
-    // Query the appropriate table
     if (table === 'sessions') {
-      let query = db.sessions.orderBy(args.orderBy || 'date');
-      if (args.orderBy && args.orderBy.startsWith('-')) {
-        query = db.sessions.orderBy(args.orderBy.slice(1)).reverse();
-      }
-      let all = await query.toArray();
-      // Apply filters
+      results = await fb.getAllSessions(app.userId);
       if (args.filters) {
-        all = all.filter((r) => {
+        results = results.filter((r: any) => {
           for (const [key, val] of Object.entries(args.filters)) {
-            if (r[key as keyof typeof r] != val) return false;
+            if (r[key] != val) return false;
           }
           return true;
         });
       }
-      if (args.dateFrom) all = all.filter((r) => r.date >= args.dateFrom);
-      if (args.dateTo) all = all.filter((r) => r.date <= args.dateTo);
-      results = all.slice(0, limit);
+      if (args.dateFrom) results = results.filter((r: any) => r.date >= args.dateFrom);
+      if (args.dateTo) results = results.filter((r: any) => r.date <= args.dateTo);
+      results = results.slice(0, limit);
 
-      // Optional join with sessionExercises
       if (args.join === 'sessionExercises') {
         for (const session of results) {
-          (session as any)._exercises = await db.sessionExercises.where('sessionId').equals(session.id!).toArray();
+          session._exercises = await fb.getSessionExercises(app.userId, session.id);
         }
       }
     } else if (table === 'sessionExercises') {
-      let all = await db.sessionExercises.toArray();
+      const sessions = await fb.getAllSessions(app.userId);
+      let all: any[] = [];
+      for (const session of sessions) {
+        const exs = await fb.getSessionExercises(app.userId, session.id);
+        for (const e of exs) all.push({ ...e, _sessionDate: session.date });
+      }
       if (args.filters) {
-        all = all.filter((r) => {
+        all = all.filter((r: any) => {
           for (const [key, val] of Object.entries(args.filters)) {
             if (key === 'exerciseName' && typeof val === 'string') {
               if (r.exerciseName.toLowerCase() !== val.toLowerCase()) return false;
-            } else if (r[key as keyof typeof r] != val) return false;
+            } else if (r[key] != val) return false;
           }
           return true;
         });
       }
       results = all.slice(0, limit);
 
-      // Optional join with sessions
       if (args.join === 'sessions') {
         for (const se of results) {
-          (se as any)._session = await db.sessions.get(se.sessionId);
+          se._session = await fb.getSessionById(app.userId, se.sessionId);
         }
       }
     } else if (table === 'exercises') {
-      let all = await db.exercises.toArray();
+      results = await fb.getAllExercises(app.userId);
       if (args.filters) {
-        all = all.filter((r) => {
+        results = results.filter((r: any) => {
           for (const [key, val] of Object.entries(args.filters)) {
-            if (r[key as keyof typeof r] != val) return false;
+            if (r[key] != val) return false;
           }
           return true;
         });
       }
-      results = all.slice(0, limit);
+      results = results.slice(0, limit);
     } else if (table === 'workoutPlans') {
-      let all = await db.workoutPlans.toArray();
+      results = await fb.getAllPlans(app.userId);
       if (args.filters) {
-        all = all.filter((r) => {
+        results = results.filter((r: any) => {
           for (const [key, val] of Object.entries(args.filters)) {
-            if (r[key as keyof typeof r] != val) return false;
+            if (r[key] != val) return false;
           }
           return true;
         });
       }
-      results = all.slice(0, limit);
+      results = results.slice(0, limit);
     } else if (table === 'recommendations') {
-      let all = await db.recommendations.orderBy('createdAt').reverse().toArray();
+      results = await fb.getAllRecommendations(app.userId, 100);
       if (args.filters) {
-        all = all.filter((r) => {
+        results = results.filter((r: any) => {
           for (const [key, val] of Object.entries(args.filters)) {
-            if (r[key as keyof typeof r] != val) return false;
+            if (r[key] != val) return false;
           }
           return true;
         });
       }
-      results = all.slice(0, limit);
+      results = results.slice(0, limit);
     } else if (table === 'userPreferences') {
-      results = await db.userPreferences.toArray();
-      if (args.filters) {
-        results = results.filter((r) => {
-          for (const [key, val] of Object.entries(args.filters)) {
-            if (r[key as keyof typeof r] != val) return false;
-          }
-          return true;
-        });
-      }
+      results = await fb.getAllPreferences(app.userId);
+      results = results.slice(0, limit);
     } else if (table === 'capabilityRequests') {
-      results = await db.capabilityRequests.toArray();
+      results = await fb.getAllCapabilityRequests(app.userId);
+      results = results.slice(0, limit);
+    } else if (table === 'macroLogs') {
+      if (args.dateFrom || args.dateTo) {
+        results = await fb.getMacroLogsInRange(
+          app.userId,
+          args.dateFrom || '1970-01-01',
+          args.dateTo || '2099-12-31',
+        );
+      } else {
+        results = await fb.getAllMacroLogs(app.userId);
+      }
       if (args.filters) {
-        results = results.filter((r) => {
+        results = results.filter((r: any) => {
           for (const [key, val] of Object.entries(args.filters)) {
-            if (r[key as keyof typeof r] != val) return false;
+            if (r[key] != val) return false;
           }
           return true;
         });
       }
+      results = results.slice(0, limit);
+    } else if (table === 'bodyWeightLogs') {
+      if (args.dateFrom || args.dateTo) {
+        results = await fb.getWeightLogsInRange(
+          app.userId,
+          args.dateFrom || '1970-01-01',
+          args.dateTo || '2099-12-31',
+        );
+      } else {
+        results = await fb.getAllWeightLogs(app.userId);
+      }
+      if (args.filters) {
+        results = results.filter((r: any) => {
+          for (const [key, val] of Object.entries(args.filters)) {
+            if (r[key] != val) return false;
+          }
+          return true;
+        });
+      }
+      results = results.slice(0, limit);
     }
 
     // Format results for AI consumption
@@ -868,7 +948,7 @@ const toolHandlers: Record<string, ToolHandler> = {
   async db_mutate(args, app) {
     const { operation, table, id, data } = args;
 
-    const validTables = ['sessions', 'sessionExercises', 'exercises', 'workoutPlans', 'recommendations', 'userPreferences'];
+    const validTables = ['sessions', 'sessionExercises', 'exercises', 'workoutPlans', 'recommendations', 'userPreferences', 'macroLogs', 'bodyWeightLogs'];
     if (!validTables.includes(table)) {
       return { success: false, summary: `Invalid table: ${table}` };
     }
@@ -878,7 +958,7 @@ const toolHandlers: Record<string, ToolHandler> = {
         const sessionId = await app.createSession({
           planId: data?.planId,
           planName: data?.planName ?? 'Custom',
-          date: data?.date ?? new Date().toISOString().split('T')[0],
+          date: data?.date ?? new Date().toLocaleDateString('en-CA'),
           completedAt: data?.completedAt,
           feedback: data?.feedback,
           notes: data?.notes,
@@ -915,7 +995,7 @@ const toolHandlers: Record<string, ToolHandler> = {
         });
         return { success: true, summary: `Plan "${data?.name}" created.` };
       } else if (table === 'recommendations') {
-        await db.recommendations.add({
+        await fb.addRecommendation(app.userId, {
           type: data?.type || 'general',
           exercise: data?.exercise,
           message: data?.message || '',
@@ -924,6 +1004,24 @@ const toolHandlers: Record<string, ToolHandler> = {
           createdAt: new Date().toISOString(),
         } as Recommendation);
         return { success: true, summary: 'Recommendation saved.' };
+      } else if (table === 'macroLogs') {
+        const macroId = await fb.addMacroLog(app.userId, {
+          date: data?.date ?? new Date().toLocaleDateString('en-CA'),
+          description: data?.description || '',
+          protein: data?.protein || 0,
+          carbs: data?.carbs || 0,
+          fat: data?.fat || 0,
+          ...(data?.calories !== undefined ? { calories: data.calories } : {}),
+          ...(data?.notes !== undefined ? { notes: data.notes } : {}),
+        });
+        return { success: true, summary: `Macro log #${macroId} created.`, data: { id: macroId } };
+      } else if (table === 'bodyWeightLogs') {
+        const weightId = await fb.addWeightLog(app.userId, {
+          date: data?.date ?? new Date().toLocaleDateString('en-CA'),
+          weight: data?.weight || 0,
+          ...(data?.notes !== undefined ? { notes: data.notes } : {}),
+        });
+        return { success: true, summary: `Weight log #${weightId} created.`, data: { id: weightId } };
       }
       return { success: false, summary: `Create not supported for table: ${table}` };
     }
@@ -938,14 +1036,22 @@ const toolHandlers: Record<string, ToolHandler> = {
         await app.updatePlan(id, data || {});
         return { success: true, summary: `Plan #${id} updated.` };
       } else if (table === 'recommendations') {
-        await db.recommendations.update(id, data || {});
+        await fb.acknowledgeRecommendation(app.userId, id);
         return { success: true, summary: `Recommendation #${id} updated.` };
       } else if (table === 'userPreferences') {
-        const existing = await db.userPreferences.get(id);
-        if (existing && existing.key) {
-          await upsertPreference(existing.key, data?.value ?? '');
+        // get key from the data, fallback to looking up existing
+        const allPrefs = await fb.getAllPreferences(app.userId);
+        const existing = allPrefs.find(p => p.id === id);
+        if (existing) {
+          await fb.setPreference(app.userId, existing.key, data?.value ?? '');
         }
         return { success: true, summary: `Preference updated.` };
+      } else if (table === 'macroLogs') {
+        await fb.updateMacroLog(app.userId, id, data || {});
+        return { success: true, summary: `Macro log #${id} updated.` };
+      } else if (table === 'bodyWeightLogs') {
+        await fb.updateWeightLog(app.userId, id, data || {});
+        return { success: true, summary: `Weight log #${id} updated.` };
       }
       return { success: false, summary: `Update not supported for table: ${table}` };
     }
@@ -956,11 +1062,17 @@ const toolHandlers: Record<string, ToolHandler> = {
         await app.deleteSession(id);
         return { success: true, summary: `Session #${id} deleted.` };
       } else if (table === 'sessionExercises') {
-        await db.sessionExercises.delete(id);
-        return { success: true, summary: `Session exercise #${id} deleted.` };
+        const found = await fb.deleteSessionExerciseById(app.userId, id);
+        return { success: found, summary: found ? `Session exercise #${id} deleted.` : `Session exercise #${id} not found.` };
       } else if (table === 'recommendations') {
-        await db.recommendations.delete(id);
-        return { success: true, summary: `Recommendation #${id} deleted.` };
+        // Recommendations don't have a direct delete — acknowledge as workaround
+        return { success: false, summary: 'Direct delete not supported for recommendations. Use update to acknowledge.' };
+      } else if (table === 'macroLogs') {
+        await fb.deleteMacroLog(app.userId, id);
+        return { success: true, summary: `Macro log #${id} deleted.` };
+      } else if (table === 'bodyWeightLogs') {
+        await fb.deleteWeightLog(app.userId, id);
+        return { success: true, summary: `Weight log #${id} deleted.` };
       }
       return { success: false, summary: `Delete not supported for table: ${table}` };
     }
@@ -968,7 +1080,7 @@ const toolHandlers: Record<string, ToolHandler> = {
     return { success: false, summary: `Unknown operation: ${operation}` };
   },
 
-  async compute(args, _app) {
+  async compute(args, app) {
     const formula = args.formula as string;
     const weeks = args.weeks || 4;
 
@@ -978,10 +1090,11 @@ const toolHandlers: Record<string, ToolHandler> = {
       const cutoff = new Date();
       cutoff.setDate(cutoff.getDate() - weeks * 7);
       const dateStr = cutoff.toISOString().split('T')[0];
-      const sessions = await db.sessions.where('date').aboveOrEqual(dateStr).toArray();
+      const sessions = await fb.getAllSessions(app.userId);
+      const filtered = sessions.filter(s => s.date >= dateStr);
       sessionData = [];
-      for (const s of sessions) {
-        const exs = await db.sessionExercises.where('sessionId').equals(s.id!).toArray();
+      for (const s of filtered) {
+        const exs = await fb.getSessionExercises(app.userId, s.id);
         sessionData.push({ date: s.date, planName: s.planName, sessionType: s.sessionType, exercises: exs });
       }
     }
@@ -1124,7 +1237,7 @@ const toolHandlers: Record<string, ToolHandler> = {
     }
 
     if (formula === 'weight_trend') {
-      const weightLogs = await db.bodyWeightLogs.orderBy('date').reverse().toArray();
+      const weightLogs = await fb.getAllWeightLogs(app.userId);
       if (weightLogs.length === 0) {
         return { success: true, summary: 'No body weight data yet.', data: { entries: 0 } };
       }
@@ -1146,7 +1259,7 @@ const toolHandlers: Record<string, ToolHandler> = {
     }
 
     if (formula === 'macro_averages') {
-      const macroLogs = await db.macroLogs.orderBy('date').reverse().toArray();
+      const macroLogs = await fb.getAllMacroLogs(app.userId);
       if (macroLogs.length === 0) {
         return { success: true, summary: 'No macro data yet.', data: { entries: 0 } };
       }
@@ -1173,33 +1286,94 @@ const toolHandlers: Record<string, ToolHandler> = {
 
   // ─── Body & Nutrition Handlers ────────────────────────────────────
 
-  async log_bodyweight(args, _app) {
-    const date = args.date || new Date().toISOString().split('T')[0];
-    await db.bodyWeightLogs.add({
+  async log_bodyweight(args, app) {
+    const date = args.date || new Date().toLocaleDateString('en-CA');
+    await fb.addWeightLog(app.userId, {
       date,
       weight: args.weight,
-      notes: args.notes,
+      ...(args.notes !== undefined ? { notes: args.notes } : {}),
     });
     return { success: true, summary: `Body weight logged: ${args.weight} lbs on ${date}.` };
   },
 
-  async log_macros(args, _app) {
-    const date = args.date || new Date().toISOString().split('T')[0];
+  async log_macros(args, app) {
+    const date = args.date || new Date().toLocaleDateString('en-CA');
     const calories = args.calories ?? Math.round(args.protein * 4 + args.carbs * 4 + args.fat * 9);
-    await db.macroLogs.add({
+    await fb.addMacroLog(app.userId, {
       date,
+      description: args.description || 'Logged via AI',
       protein: args.protein,
       carbs: args.carbs,
       fat: args.fat,
       calories,
-      notes: args.notes,
+      ...(args.notes !== undefined ? { notes: args.notes } : {}),
     });
     return { success: true, summary: `Macros logged for ${date}: ${args.protein}g P / ${args.carbs}g C / ${args.fat}g F (${calories} kcal).` };
   },
 
-  async request_capability(args, _app) {
+  async update_macros(args, app) {
+    const updates: Record<string, any> = {};
+    if (args.description !== undefined) updates.description = args.description;
+    if (args.protein !== undefined) updates.protein = args.protein;
+    if (args.carbs !== undefined) updates.carbs = args.carbs;
+    if (args.fat !== undefined) updates.fat = args.fat;
+    if (args.calories !== undefined) updates.calories = args.calories;
+    if (args.date !== undefined) updates.date = args.date;
+    if (args.notes !== undefined) updates.notes = args.notes;
+
+    if (Object.keys(updates).length === 0) {
+      return { success: false, summary: 'No fields provided to update.' };
+    }
+
+    await fb.updateMacroLog(app.userId, args.id, updates);
+    const changed = Object.keys(updates).join(', ');
+    return { success: true, summary: `Macro log #${args.id} updated (${changed}).` };
+  },
+
+  async query_macros(args, app) {
+    let logs: any[];
+    if (args.dateFrom || args.dateTo) {
+      logs = await fb.getMacroLogsInRange(
+        app.userId,
+        args.dateFrom || '1970-01-01',
+        args.dateTo || '2099-12-31',
+      );
+    } else {
+      logs = await fb.getAllMacroLogs(app.userId);
+    }
+
+    const limit = args.limit || 20;
+    const limited = logs.slice(0, limit);
+
+    let text = `\n🍽️ Macro Log Query Results:\n`;
+    if (args.dateFrom || args.dateTo) text += `Date range: ${args.dateFrom || 'any'} → ${args.dateTo || 'any'}\n`;
+    text += `Found ${logs.length} entries (showing ${limited.length}):\n`;
+
+    for (const log of limited) {
+      const cals = log.calories ?? Math.round(log.protein * 4 + log.carbs * 4 + log.fat * 9);
+      text += `\n[${log.id}] ${log.date} — ${log.description || '(no description)'}\n`;
+      text += `  ${log.protein}g P / ${log.carbs}g C / ${log.fat}g F (${cals} kcal)\n`;
+      if (log.notes) text += `  Notes: ${log.notes}\n`;
+    }
+
+    const queryResult: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'system',
+      content: text,
+      timestamp: Date.now(),
+    };
+
+    return {
+      success: true,
+      summary: `Found ${logs.length} macro entries.`,
+      data: { count: logs.length, entries: limited },
+      queryResults: [queryResult],
+    };
+  },
+
+  async request_capability(args, app) {
     const id = crypto.randomUUID();
-    await db.capabilityRequests.add({
+    await fb.addCapabilityRequest(app.userId, {
       id,
       title: args.title,
       description: args.description,

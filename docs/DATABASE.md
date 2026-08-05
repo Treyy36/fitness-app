@@ -1,23 +1,93 @@
 # Database Schema
 
-IndexedDB (via Dexie.js) schema for GymTracker AI. All data stored locally on device.
+Firebase Firestore. All data under `/users/{userId}/`. IDs are Firestore auto-generated strings.
 
-## Tables
+## Collections
 
-### `exercises` — Exercise Catalog
+### `exercises`
 
-Master catalog of available exercises.
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `string` | "Machine Chest Press" |
+| `category` | `MuscleGroup` | chest, back, shoulders, biceps, triceps, quads, hamstrings, glutes, calves, abs, other |
+| `defaultSets` | `number` | 3 |
+| `defaultReps` | `number` | 10 |
+| `prWeight?` | `number` | Heaviest weight at defaultSets × defaultReps |
+| `prDate?` | `string` | ISO date when PR set |
 
-| Field | Type | Index | Description |
-|---|---|---|---|
-| `id` | `++` (auto) | Primary | Auto-increment ID |
-| `name` | `string` | Yes | Exercise name (e.g., "Leg Press") |
-| `category` | `MuscleGroup` | Yes | chest, back, shoulders, biceps, triceps, quads, hamstrings, glutes, calves, abs, other |
-| `defaultSets` | `number` | — | Default sets for this exercise |
-| `defaultReps` | `number` | — | Default reps for this exercise |
-| `notes` | `string?` | — | Optional notes (e.g., "Seconds" for planks) |
+### `workoutPlans`
 
-**Seed data**: 17 Planet Fitness exercises.
+| Field | Type |
+|---|---|
+| `name` | `string` |
+| `dayOfWeek?` | `number` (0–6) |
+| `exercises` | `WorkoutPlanExercise[]` embedded |
+| `createdAt` | `string` ISO |
+
+**WorkoutPlanExercise** (embedded): `exerciseId` (→ exercises), `targetSets`, `targetReps`, `notes?`
+
+### `sessions`
+
+| Field | Type |
+|---|---|
+| `planId?` | `string` → workoutPlans |
+| `planName?` | `string` snapshot |
+| `date` | `string` ISO "2026-08-05" |
+| `completedAt?` | `string` ISO |
+| `feedback?` | `string` |
+| `sessionType?` | 'standard' \| 'test' \| 'deload' |
+
+### `sessions/{id}/exercises` *(subcollection)*
+
+| Field | Type |
+|---|---|
+| `sessionId` | `string` |
+| `exerciseId` | `string` → exercises |
+| `exerciseName` | `string` snapshot |
+| `sets` | `SetRecord[]` embedded |
+
+**SetRecord**: `setNumber`, `reps`, `weight`, `completed`, `rpe?`
+
+### `recommendations`
+
+`type`, `exercise?`, `message`, `action?`, `acknowledged`, `createdAt`, `sessionId?`
+
+### `bodyWeightLogs`
+
+`date`, `weight`, `notes?`
+
+### `macroLogs`
+
+`date`, `description` (required), `protein`, `carbs`, `fat`, `calories?`, `notes?`
+
+### `userPreferences`
+
+`key` (e.g. "protein_goal"), `value`
+
+### `capabilityRequests`
+
+`title`, `description`, `problem`, `blockedFeature`, `suggestedTools[]`, `priority`, `conversationContext`, `status`, `createdAt`, `deployedAt?`
+
+## Relationship Map
+
+```
+workoutPlans[].exercises[].exerciseId → exercises
+sessions.planId                       → workoutPlans
+sessions/{id}/exercises[].exerciseId  → exercises
+recommendations.sessionId             → sessions
+```
+
+## Notes
+
+- **No seed data** — starts empty. Exercises and plans created by the AI via chat.
+- **RPE is optional** — `cleanSets()` helper strips `undefined` before Firestore writes.
+- **Timezone-aware** — dates use `toLocaleDateString('en-CA')` for local `YYYY-MM-DD`.
+- **PRs** — stored on the exercise document itself, updated automatically when logging sessions.
+
+---
+
+*Last updated: 2026-08-05 · Firebase Firestore*
+
 
 ### `workoutPlans` — Workout Templates
 

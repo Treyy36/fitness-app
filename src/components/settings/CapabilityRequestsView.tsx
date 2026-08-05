@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { db, type CapabilityRequest } from '../../db/database';
+import { useApp } from '../../context/AppContext';
+import type { CapabilityRequest } from '../../firebase/types';
+import * as fb from '../../firebase';
 
 const PRIORITY_COLORS: Record<string, string> = {
   blocking: 'text-red-400 bg-red-900/20 border-red-800/50',
@@ -22,12 +24,14 @@ const PRIORITY_LABELS: Record<string, string> = {
 };
 
 export function CapabilityRequestsView() {
+  const { userId } = useApp();
   const [requests, setRequests] = useState<CapabilityRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
+  // TODO: get from auth context when available
   const refresh = useCallback(async () => {
-    const all = await db.capabilityRequests.toArray();
+    const all = await fb.getAllCapabilityRequests(userId);
     // Sort: pending first, then by priority (blocking > enhancement > nice_to_have), then newest
     const priorityOrder: Record<string, number> = { blocking: 0, enhancement: 1, nice_to_have: 2 };
     const statusOrder: Record<string, number> = { pending: 0, approved: 1, building: 2, deployed: 3, dismissed: 4 };
@@ -47,14 +51,11 @@ export function CapabilityRequestsView() {
   }, [refresh]);
 
   const updateStatus = async (id: string, status: CapabilityRequest['status']) => {
-    const existing = await db.capabilityRequests.get(id);
-    if (existing) {
-      await db.capabilityRequests.update(id, {
-        status,
-        ...(status === 'deployed' ? { deployedAt: new Date().toISOString() } : {}),
-      } as any);
-      await refresh();
-    }
+    await fb.updateCapabilityRequest(userId, id, {
+      status,
+      ...(status === 'deployed' ? { deployedAt: new Date().toISOString() } : {}),
+    } as any);
+    await refresh();
   };
 
   const copyToCopilot = async (req: CapabilityRequest) => {

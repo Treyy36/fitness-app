@@ -1,9 +1,23 @@
 import { useApp } from '../../context/AppContext';
-import { useExercises, getExerciseName } from '../../hooks/useWorkoutPlans';
+
+function getExerciseName(
+  exercisePlans: Array<{ exerciseId: string; targetSets: number; targetReps: number; notes?: string }>,
+  allExercises: Array<{ id: string; name: string }>
+): { exerciseId: string; name: string; targetSets: number; targetReps: number; notes?: string }[] {
+  return exercisePlans.map((ep) => {
+    const ex = allExercises.find((e) => e.id === ep.exerciseId);
+    return {
+      exerciseId: ep.exerciseId,
+      name: ex?.name ?? 'Unknown Exercise',
+      targetSets: ep.targetSets,
+      targetReps: ep.targetReps,
+      notes: ep.notes,
+    };
+  });
+}
 
 export function PlanListView() {
-  const { plans, plansLoading } = useApp();
-  const { exercises } = useExercises();
+  const { plans, plansLoading, exercises } = useApp();
 
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -47,7 +61,7 @@ export function PlanListView() {
                 {planExercises.map((ex) => (
                   <div key={ex.exerciseId} className="flex justify-between text-sm">
                     <span className="text-slate-300">{ex.name}</span>
-                    <span className="text-slate-500">{ex.sets}×{ex.reps}</span>
+                    <span className="text-slate-500">{ex.targetSets}×{ex.targetReps}</span>
                   </div>
                 ))}
               </div>

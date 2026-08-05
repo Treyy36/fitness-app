@@ -1,6 +1,6 @@
 # Data Flow
 
-End-to-end walkthrough of the agentic execution loop with native tool calling, replacing the legacy `<!--ACTION-->` regex pattern.
+**Updated 2026-08-05** — migrated from local IndexedDB (Dexie) to Firebase Firestore with Google Auth. All tool calls now write to Firestore under `/users/{uid}/`. Cross-device sync via shared Google identity.
 
 ## Flow 1: Requesting Today's Workout
 

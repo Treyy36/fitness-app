@@ -2,8 +2,9 @@ import { NavLink, useLocation } from 'react-router-dom';
 
 const tabs = [
   { to: '/', icon: '💬', label: 'Chat' },
+  { to: '/data', icon: '📈', label: 'Data' },
   { to: '/plans', icon: '📋', label: 'Plans' },
-  { to: '/history', icon: '📊', label: 'History' },
+  { to: '/exercises', icon: '🏋️', label: 'Exercises' },
   { to: '/settings', icon: '⚙️', label: 'Settings' },
 ];
 

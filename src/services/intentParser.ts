@@ -1,4 +1,5 @@
-import { db, type SetRecord, type Recommendation, type MuscleGroup } from '../db/database';
+import * as fb from '../firebase';
+import type { SetRecord, Recommendation, MuscleGroup } from '../firebase/types';
 import type { ActionResult, ChatMessage } from '../context/ChatContext';
 
 interface ParsedAction {
@@ -120,7 +121,7 @@ export async function executeActions(
         }
 
         case 'save_recommendation': {
-          await db.recommendations.add({
+          await fb.addRecommendation((app as any).userId || 'demo-user-001', {
             sessionId: data.sessionId,
             type: data.type || 'general',
             exercise: data.exercise,
@@ -142,7 +143,8 @@ export async function executeActions(
 
           if (data.exercises && Array.isArray(data.exercises)) {
             // Replace all session exercises: delete old ones, insert new ones
-            await db.sessionExercises.where('sessionId').equals(data.sessionId).delete();
+            const existing = await fb.getSessionExercises((app as any).userId || 'demo-user-001', data.sessionId);
+            await Promise.all(existing.map(e => fb.deleteSessionExerciseById((app as any).userId || 'demo-user-001', e.id)));
             for (const ex of data.exercises) {
               const found = app.exercises.find((e) => e.name.toLowerCase() === ex.name.toLowerCase());
               const sets: SetRecord[] = (ex.sets || []).map((s: any) => ({
@@ -195,12 +197,10 @@ export async function executeActions(
         }
 
         case 'get_session_history': {
-          let sessionsQuery = db.sessions.orderBy('date').reverse();
-
+          const sessions = await fb.getAllSessions((app as any).userId || 'demo-user-001');
           const matchingSessions: any[] = [];
-          let collection = await sessionsQuery.toArray();
 
-          for (const session of collection) {
+          for (const session of sessions) {
             let match = true;
 
             if (data.sessionType && session.sessionType !== data.sessionType) match = false;
@@ -209,7 +209,7 @@ export async function executeActions(
             if (data.dateTo && session.date > data.dateTo) match = false;
 
             if (data.exerciseName && match) {
-              const exs = await db.sessionExercises.where('sessionId').equals(session.id!).toArray();
+              const exs = await fb.getSessionExercises((app as any).userId || 'demo-user-001', session.id);
               const hasExercise = exs.some((e) => e.exerciseName.toLowerCase() === data.exerciseName.toLowerCase());
               if (!hasExercise) match = false;
             }
@@ -227,7 +227,7 @@ export async function executeActions(
           text += `Found ${matchingSessions.length} matching sessions (showing ${limited.length}):\n`;
 
           for (const session of limited) {
-            const exs = await db.sessionExercises.where('sessionId').equals(session.id!).toArray();
+            const exs = await fb.getSessionExercises((app as any).userId || 'demo-user-001', session.id);
             const exSummary = exs.map((e) => {
               const setSummary = e.sets.map((s) => `${s.weight}lbs x ${s.reps}${s.completed ? '' : ' (FAILED)'}${s.rpe ? ` RPE${s.rpe}` : ''}`).join(', ');
               return `  - ${e.exerciseName}: ${setSummary}`;
@@ -247,8 +247,7 @@ export async function executeActions(
         }
 
         case 'get_recommendation_history': {
-          let recs = db.recommendations.orderBy('createdAt').reverse();
-          const allRecs = await recs.toArray();
+          const allRecs = await fb.getAllRecommendations((app as any).userId || 'demo-user-001', 100);
 
           const filtered = allRecs.filter((r) => {
             if (data.exercise && r.exercise?.toLowerCase() !== data.exercise.toLowerCase()) return false;
@@ -284,9 +283,17 @@ export async function executeActions(
 
         case 'get_rpe_trend': {
           const exerciseName = data.exerciseName;
-          const allSE = await db.sessionExercises.toArray();
+          const userId = (app as any).userId || 'demo-user-001';
+          const sessions = await fb.getAllSessions(userId);
+          const matching: any[] = [];
 
-          const matching = allSE.filter((se) => se.exerciseName.toLowerCase() === exerciseName.toLowerCase());
+          for (const session of sessions) {
+            const exs = await fb.getSessionExercises(userId, session.id);
+            const matched = exs.filter((se) => se.exerciseName.toLowerCase() === exerciseName.toLowerCase());
+            for (const se of matched) {
+              matching.push({ ...se, _sessionDate: session.date });
+            }
+          }
 
           if (matching.length === 0) {
             queryResults.push({
@@ -305,8 +312,7 @@ export async function executeActions(
           let rpeCount = 0;
 
           for (const se of matching) {
-            const session = await db.sessions.get(se.sessionId);
-            const date = session?.date ?? 'unknown';
+            const date = se._sessionDate ?? 'unknown';
             const setsWithRpe = se.sets.filter((s) => s.rpe !== undefined);
             if (setsWithRpe.length === 0) continue;
 

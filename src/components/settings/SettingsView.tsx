@@ -1,27 +1,24 @@
 import { useState, useEffect } from 'react';
 import { useChat } from '../../context/ChatContext';
-import { db } from '../../db/database';
+import { useApp } from '../../context/AppContext';
+import * as fb from '../../firebase';
 import { CapabilityRequestsView } from './CapabilityRequestsView';
 
 export function SettingsView() {
   const { setApiKey, hasApiKey } = useChat();
+  const { userId, exercises, plans, sessions } = useApp();
   const [keyInput, setKeyInput] = useState('');
   const [saved, setSaved] = useState(false);
   const [dbStats, setDbStats] = useState({ exercises: 0, plans: 0, sessions: 0 });
 
   useEffect(() => {
     (async () => {
-      const keyPref = await db.userPreferences.get({ key: 'deepseek_api_key' });
-      if (keyPref) setKeyInput(keyPref.value);
+      const key = await fb.getPreference(userId, 'deepseek_api_key');
+      if (key) setKeyInput(key);
 
-      const [ex, pl, se] = await Promise.all([
-        db.exercises.count(),
-        db.workoutPlans.count(),
-        db.sessions.count(),
-      ]);
-      setDbStats({ exercises: ex, plans: pl, sessions: se });
+      setDbStats({ exercises: exercises.length, plans: plans.length, sessions: sessions.length });
     })();
-  }, []);
+  }, [userId, exercises, plans, sessions]);
 
   const handleSave = async () => {
     await setApiKey(keyInput.trim());
@@ -30,15 +27,8 @@ export function SettingsView() {
   };
 
   const handleReset = async () => {
-    if (!confirm('This will delete ALL workout data (plans, sessions, history). This cannot be undone. Continue?')) return;
-    await Promise.all([
-      db.exercises.clear(),
-      db.workoutPlans.clear(),
-      db.sessions.clear(),
-      db.sessionExercises.clear(),
-      db.recommendations.clear(),
-      db.userPreferences.clear(),
-    ]);
+    // TODO: Implement Firestore-based reset (delete all user subcollections)
+    if (!confirm('This will reload the app. To fully reset data, delete your user data from the Firebase console.')) return;
     window.location.replace(window.location.origin + '/fitness-app/');
   };
 

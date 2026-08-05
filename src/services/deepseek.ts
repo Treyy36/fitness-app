@@ -17,13 +17,15 @@ export interface DeepSeekResponse {
 
 export function buildSystemPrompt(context: {
   today: string;
+  todayDate: string;
+  todayTime: string;
   todayDayIndex: number;
   todaysPlan: { name: string; exercises: string[] } | null;
   allPlans: string;
   exerciseCatalog: string;
   recentSessionData: string;
   recommendationSummary?: string;
-  activeSessionId: number | null;
+  activeSessionId: string | null;
   preferences: string[];
 }): string {
   const prefs = context.preferences.length > 0
@@ -72,7 +74,7 @@ Machine Chest Press, Machine Shoulder Press, Incline Dumbbell Press, Pec Deck, R
 - Lower body appears balanced but requires more data before aggressive progression
 
 ## Current Context
-- Today: ${context.today} (day index: ${context.todayDayIndex}, 0=Sun, 6=Sat)
+- Today: ${context.today}, ${context.todayDate} at ${context.todayTime} (day index: ${context.todayDayIndex}, 0=Sun, 6=Sat)
 - Active session: ${context.activeSessionId ? `Session #${context.activeSessionId} in progress` : 'None'}
 
 ## Today's Scheduled Workout

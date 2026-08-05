@@ -3,8 +3,8 @@ import { useApp } from './AppContext';
 import { sendToDeepSeek, buildSystemPrompt } from '../services/deepseek';
 import { getToolDefinitions, executeToolCall, toActionResult } from '../services/toolRegistry';
 import type { ToolCall } from '../services/toolRegistry';
-import type { WorkoutPlan } from '../db/database';
-import { db, upsertPreference } from '../db/database';
+import type { WorkoutPlan } from '../firebase/types';
+import * as fb from '../firebase';
 
 export interface ChatMessage {
   id: string;
@@ -40,27 +40,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [apiKey, setApiKeyState] = useState<string>('');
   const messagesRef = useRef<ChatMessage[]>([]);
 
-  // Load API key and chat history from DB
+  // Load API key and chat history from Firestore
   useEffect(() => {
     (async () => {
-      const keyPref = await db.userPreferences.get({ key: 'deepseek_api_key' });
-      if (keyPref) setApiKeyState(keyPref.value);
+      const key = await fb.getPreference(app.userId, 'deepseek_api_key');
+      if (key) setApiKeyState(key);
 
-      const savedMessages = await db.userPreferences.get({ key: 'chat_history' });
-      if (savedMessages) {
+      const saved = await fb.getPreference(app.userId, 'chat_history');
+      if (saved) {
         try {
-          const parsed = JSON.parse(savedMessages.value);
+          const parsed = JSON.parse(saved);
           setMessages(parsed);
           messagesRef.current = parsed;
         } catch { /* ignore */ }
       }
     })();
-  }, []);
+  }, [app.userId]);
 
   const setApiKey = useCallback(async (key: string) => {
     setApiKeyState(key);
-    await upsertPreference('deepseek_api_key', key);
-  }, []);
+    await fb.setPreference(app.userId, 'deepseek_api_key', key);
+  }, [app.userId]);
 
   const buildContext = useCallback(async (): Promise<string> => {
     const now = new Date();
@@ -71,11 +71,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const todaysPlan = app.getPlanForDay(dayOfWeek);
 
     // Recent sessions (last 20 — full detail for first 10, condensed for older)
-    const recentSessions = await db.sessions.orderBy('date').reverse().limit(20).toArray();
+    const recentSessions = await fb.getRecentSessions(app.userId, 20);
     let recentSessionData = '';
     for (let i = 0; i < recentSessions.length; i++) {
       const session = recentSessions[i];
-      const exercises = await db.sessionExercises.where('sessionId').equals(session.id!).toArray();
+      const exercises = await fb.getSessionExercises(app.userId, session.id);
       const typeLabel = session.sessionType && session.sessionType !== 'standard' ? ` [${session.sessionType}]` : '';
 
       if (i < 10) {
@@ -98,7 +98,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     // Recommendation history summary (last 10)
     let recommendationSummary = '';
     try {
-      const recs = await db.recommendations.orderBy('createdAt').reverse().limit(10).toArray();
+      const recs = await fb.getAllRecommendations(app.userId, 10);
       if (recs.length > 0) {
         recommendationSummary = recs.map((r) =>
           `[${r.acknowledged ? '✓' : '○'}] ${r.type} ${r.exercise ? `(${r.exercise})` : ''}: ${r.message}`
@@ -109,7 +109,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const allPlans = app.plans.map((p) => {
       const exNames = p.exercises.map((pe) => {
         const ex = app.exercises.find((e) => e.id === pe.exerciseId);
-        return `${ex?.name ?? 'Unknown'} (${pe.sets}x${pe.reps})`;
+        return `${ex?.name ?? 'Unknown'} (${pe.targetSets}x${pe.targetReps})`;
       }).join(', ');
       const dayLabel = p.dayOfWeek !== undefined ? days[p.dayOfWeek] : 'Unscheduled';
       return `- ${p.name} [${dayLabel}]: ${exNames}`;
@@ -128,12 +128,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     return buildSystemPrompt({
       today: days[dayOfWeek],
+      todayDate: now.toLocaleDateString('en-CA'),
+      todayTime: now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
       todayDayIndex: dayOfWeek,
       todaysPlan: todaysPlan ? {
         name: todaysPlan.name,
         exercises: todaysPlan.exercises.map((pe) => {
           const ex = app.exercises.find((e) => e.id === pe.exerciseId);
-          return `${ex?.name ?? 'Unknown'} — ${pe.sets} sets x ${pe.reps} reps`;
+          return `${ex?.name ?? 'Unknown'} — ${pe.targetSets} sets x ${pe.targetReps} reps`;
         }),
       } : null,
       allPlans,
@@ -239,7 +241,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       messagesRef.current = newMessages;
 
       // Persist chat history
-      await upsertPreference(
+      await fb.setPreference(
+        app.userId,
         'chat_history',
         JSON.stringify(messagesRef.current.slice(-50))
       );
@@ -260,8 +263,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const clearChat = useCallback(async () => {
     setMessages([]);
     messagesRef.current = [];
-    await db.userPreferences.where('key').equals('chat_history').delete();
-  }, []);
+    await fb.setPreference(app.userId, 'chat_history', '[]');
+  }, [app.userId]);
 
   return (
     <ChatContext.Provider value={{ messages, isStreaming, sendMessage, clearChat, setApiKey, hasApiKey: !!apiKey }}>
