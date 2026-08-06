@@ -1,9 +1,9 @@
 import {
   collection, getDocs, addDoc, updateDoc, deleteDoc, doc, getDoc,
-  query, orderBy, where, limit as limitQuery,
+  query, orderBy, where, limit as limitQuery, writeBatch,
 } from 'firebase/firestore';
 import { db } from './config';
-import type { Session, SessionExercise, SessionType, SetRecord } from './types';
+import type { Session, SessionExercise, SessionType, SetRecord, LogSessionResult, SetWriteResult, ExerciseWriteResult, SubstitutionRecord } from './types';
 
 // --- Session collection ---
 
@@ -177,20 +177,100 @@ export async function getLastSessionExercise(
   return null;
 }
 
-/** Log a full session with exercises in one operation. */
+/** Strip undefined values from sets so Firestore doesn't reject the document. */
+function sanitizeSets(sets: SetRecord[]): SetRecord[] {
+  return sets.map((s) => {
+    const clean: any = { setNumber: s.setNumber, reps: s.reps, weight: s.weight, completed: s.completed };
+    if (s.rpe !== undefined && s.rpe !== null) clean.rpe = s.rpe;
+    return clean;
+  });
+}
+
+/**
+ * Log a full session atomically using a Firestore batch write.
+ *
+ * All session + exercise writes succeed or fail together — no partial sessions.
+ * Returns a verbose `LogSessionResult` so the caller can verify exactly what
+ * was written without needing a follow-up query.
+ */
 export async function logCompleteSession(
   userId: string,
   session: Omit<Session, 'id'>,
   exercises: Omit<SessionExercise, 'id'>[],
-): Promise<{ sessionId: string; exerciseIds: string[] }> {
-  const sessionId = await createSession(userId, session);
-  const exerciseIds: string[] = [];
+  substitutions?: SubstitutionRecord[],
+): Promise<LogSessionResult> {
+  const batch = writeBatch(db);
 
-  // Add each exercise to the subcollection
-  for (const ex of exercises) {
-    const id = await addSessionExercise(userId, sessionId, { ...ex, sessionId });
-    exerciseIds.push(id);
+  // ── Pre-generate IDs so we can use batch.set() ──
+  const sessionDocRef = doc(sessionsCol(userId));
+  const sessionId = sessionDocRef.id;
+
+  const exerciseDocRefs = exercises.map(() => doc(exercisesCol(userId, sessionId)));
+
+  // ── Write session doc ──
+  const completedAt = session.completedAt || new Date().toISOString();
+  batch.set(sessionDocRef, {
+    planId: session.planId || null,
+    planName: session.planName || null,
+    date: session.date,
+    completedAt,
+    feedback: session.feedback || null,
+    sessionType: session.sessionType || 'standard',
+    notes: session.notes || null,
+    substitutions: (substitutions && substitutions.length > 0) ? substitutions : null,
+  });
+
+  // ── Write exercise subcollection docs ──
+  const exerciseResults: ExerciseWriteResult[] = [];
+  let allCatalogMatched = true;
+
+  for (let i = 0; i < exercises.length; i++) {
+    const ex = exercises[i];
+    const docRef = exerciseDocRefs[i];
+    const cleanSets = sanitizeSets(ex.sets);
+
+    batch.set(docRef, {
+      sessionId,
+      exerciseId: ex.exerciseId || '',
+      exerciseName: ex.exerciseName,
+      sets: cleanSets,
+    });
+
+    if (!ex.exerciseId) allCatalogMatched = false;
+
+    const setResults: SetWriteResult[] = cleanSets.map((s) => ({
+      setNumber: s.setNumber,
+      reps: s.reps,
+      weight: s.weight,
+      completed: s.completed,
+      ...(s.rpe !== undefined ? { rpe: s.rpe } : {}),
+    }));
+
+    exerciseResults.push({
+      exerciseDocId: docRef.id,
+      exerciseCatalogId: ex.exerciseId || '',
+      exerciseName: ex.exerciseName,
+      sets: setResults,
+    });
   }
 
-  return { sessionId, exerciseIds };
+  // ── Commit atomically ──
+  await batch.commit();
+
+  const totalSets = exerciseResults.reduce((sum, e) => sum + e.sets.length, 0);
+
+  return {
+    sessionId,
+    planName: session.planName || 'Custom',
+    planId: session.planId,
+    date: session.date,
+    completedAt,
+    sessionType: session.sessionType || 'standard',
+    feedback: session.feedback,
+    substitutions: substitutions && substitutions.length > 0 ? substitutions : undefined,
+    exercises: exerciseResults,
+    exerciseCount: exerciseResults.length,
+    totalSets,
+    verified: allCatalogMatched,
+  };
 }

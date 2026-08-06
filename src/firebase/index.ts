@@ -11,3 +11,4 @@ export * from './bodyWeight';
 export * from './macros';
 export * from './preferences';
 export * from './capabilityRequests';
+export * from './dedup';

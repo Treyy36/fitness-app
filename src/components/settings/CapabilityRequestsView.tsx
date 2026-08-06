@@ -29,8 +29,8 @@ export function CapabilityRequestsView() {
   const [loading, setLoading] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // TODO: get from auth context when available
   const refresh = useCallback(async () => {
+    if (!userId) return;
     const all = await fb.getAllCapabilityRequests(userId);
     // Sort: pending first, then by priority (blocking > enhancement > nice_to_have), then newest
     const priorityOrder: Record<string, number> = { blocking: 0, enhancement: 1, nice_to_have: 2 };
@@ -44,18 +44,26 @@ export function CapabilityRequestsView() {
     });
     setRequests(all);
     setLoading(false);
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
+  const [actionError, setActionError] = useState<string | null>(null);
+
   const updateStatus = async (id: string, status: CapabilityRequest['status']) => {
-    await fb.updateCapabilityRequest(userId, id, {
-      status,
-      ...(status === 'deployed' ? { deployedAt: new Date().toISOString() } : {}),
-    } as any);
-    await refresh();
+    setActionError(null);
+    try {
+      await fb.updateCapabilityRequest(userId, id, {
+        status,
+        ...(status === 'deployed' ? { deployedAt: new Date().toISOString() } : {}),
+      } as any);
+      await refresh();
+    } catch (err: any) {
+      setActionError(err?.message || 'Failed to update request. Check Firestore permissions.');
+      console.error('updateStatus failed:', err);
+    }
   };
 
   const copyToCopilot = async (req: CapabilityRequest) => {
@@ -117,6 +125,12 @@ Plan this out and help me implement it.`;
           Refresh
         </button>
       </div>
+
+      {actionError && (
+        <div className="bg-red-900/30 border border-red-700/50 rounded-lg px-3 py-2 text-xs text-red-400">
+          {actionError}
+        </div>
+      )}
 
       {requests.length === 0 ? (
         <div className="bg-slate-800/50 rounded-xl p-6 text-center">

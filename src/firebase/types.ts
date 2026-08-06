@@ -48,6 +48,14 @@ export interface Session {
   notes?: string;
   feedback?: string;          // post-workout freeform
   sessionType?: SessionType;
+  /** Exercise substitutions made during this session (planned → actual). */
+  substitutions?: SubstitutionRecord[];
+}
+
+export interface SubstitutionRecord {
+  planned: string;   // exercise name from the plan template
+  actual: string;    // exercise name actually performed
+  reason?: string;   // why the substitution was made
 }
 
 // ─── Session Exercises (subcollection under sessions) ───────
@@ -66,6 +74,39 @@ export interface SessionExercise {
   exerciseId: string;         // → exercises/{id}
   exerciseName: string;       // snapshot (survives catalog renames)
   sets: SetRecord[];
+}
+
+// ─── Session Logging Result (verbose verification) ──────────
+
+export interface SetWriteResult {
+  setNumber: number;
+  reps: number;
+  weight: number;
+  completed: boolean;
+  rpe?: number;
+}
+
+export interface ExerciseWriteResult {
+  exerciseDocId: string;      // Firestore doc ID in the sessionExercises subcollection
+  exerciseCatalogId: string;  // → exercises/{id} (empty string if not in catalog)
+  exerciseName: string;
+  sets: SetWriteResult[];
+}
+
+export interface LogSessionResult {
+  sessionId: string;
+  planName: string;
+  planId?: string;
+  date: string;
+  completedAt: string;
+  sessionType: SessionType;
+  feedback?: string;
+  substitutions?: SubstitutionRecord[];
+  exercises: ExerciseWriteResult[];
+  exerciseCount: number;
+  totalSets: number;
+  /** True if all exercises matched catalog entries and all sets were written. */
+  verified: boolean;
 }
 
 // ─── Recommendations ────────────────────────────────────────

@@ -521,44 +521,84 @@ const toolHandlers: Record<string, ToolHandler> = {
     if (!plan && args.planName) plan = app.getPlanByName(args.planName);
     if (!plan) plan = app.getPlanForDay(new Date().getDay());
 
-    const sessionId = await app.createSession({
-      planId: plan?.id,
-      planName: plan?.name ?? args.planName ?? 'Custom',
-      date: new Date().toLocaleDateString('en-CA'),  // local date (YYYY-MM-DD)
-      completedAt: new Date().toISOString(),
-      feedback: args.feedback,
-      sessionType: (args.sessionType ?? 'standard') as SessionType,
-    });
+    const date = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+    const completedAt = new Date().toISOString();
 
-    for (const ex of args.exercises || []) {
+    // Build substitutions array for persistence
+    const substitutions = (args.substitutions || []).map((s: any) => ({
+      planned: s.planned,
+      actual: s.actual,
+      reason: s.reason || undefined,
+    }));
+
+    // Build exercise payloads with catalog lookups
+    const exercisePayloads = (args.exercises || []).map((ex: any) => {
       const found = app.exercises.find((e) => e.name.toLowerCase() === ex.name.toLowerCase());
-      const sets: SetRecord[] = cleanSets(ex.sets || []);
-
-      await app.addSessionExercise({
-        sessionId,
+      return {
+        sessionId: '', // filled by logCompleteSession
         exerciseId: found?.id ?? '',
         exerciseName: ex.name,
-        sets,
-      });
+        sets: (ex.sets || []).map((s: any) => ({
+          setNumber: s.setNumber,
+          reps: s.reps,
+          weight: s.weight,
+          completed: s.completed !== false,
+          ...(s.rpe !== undefined && s.rpe !== null ? { rpe: s.rpe } : {}),
+        })),
+      };
+    });
 
-      // Check and update PR
-      for (const set of sets) {
-        await fb.checkAndUpdatePR(app.userId, found?.id ?? '', set.weight, set.reps, new Date().toLocaleDateString('en-CA'));
+    // Atomic batch write — all or nothing
+    const result = await fb.logCompleteSession(
+      app.userId,
+      {
+        planId: plan?.id,
+        planName: plan?.name ?? args.planName ?? 'Custom',
+        date,
+        completedAt,
+        feedback: args.feedback || undefined,
+        sessionType: (args.sessionType ?? 'standard') as SessionType,
+      },
+      exercisePayloads,
+      substitutions.length > 0 ? substitutions : undefined,
+    );
+
+    // PR updates (best-effort — not in the atomic batch, but non-critical)
+    for (const exResult of result.exercises) {
+      if (!exResult.exerciseCatalogId) continue;
+      for (const set of exResult.sets) {
+        await fb.checkAndUpdatePR(app.userId, exResult.exerciseCatalogId, set.weight, set.reps, date);
       }
     }
 
-    await app.completeSession(sessionId, args.feedback);
     app.setActiveSessionId(null);
     await app.refreshSessions();
 
-    const subNote = args.substitutions?.length
-      ? ` (${args.substitutions.length} substitution${args.substitutions.length > 1 ? 's' : ''}: ${args.substitutions.map((s: any) => `${s.planned}→${s.actual}`).join(', ')})`
+    // Build verbose verification summary
+    const exLines = result.exercises.map((e) => {
+      const setLines = e.sets.map((s) =>
+        `${s.weight}lb × ${s.reps}${s.completed ? '' : ' (FAILED)'}${s.rpe ? ` @RPE${s.rpe}` : ''}`,
+      ).join(', ');
+      const warn = !e.exerciseCatalogId ? ' ⚠️ not in catalog' : '';
+      return `  ${e.exerciseName}${warn}: ${setLines}`;
+    }).join('\n');
+
+    const subNote = result.substitutions?.length
+      ? `\nSubstitutions: ${result.substitutions.map((s) => `${s.planned} → ${s.actual}`).join(', ')}`
       : '';
+
+    const verifyNote = result.verified
+      ? '✓ All exercises matched catalog'
+      : '⚠️ Some exercises missing from catalog (logged anyway)';
 
     return {
       success: true,
-      summary: `Session #${sessionId} logged as "${plan?.name ?? args.planName ?? 'Custom'}" with ${args.exercises?.length ?? 0} exercises${subNote}.`,
-      data: { sessionId },
+      summary:
+        `Session #${result.sessionId} logged: "${result.planName}" (${result.sessionType})\n` +
+        `${result.exerciseCount} exercises, ${result.totalSets} sets\n` +
+        `${verifyNote}${subNote}\n\n` +
+        `Written:\n${exLines}`,
+      data: result,
     };
   },
 
